@@ -1,0 +1,440 @@
+import makeWASocket, {
+    useMultiFileAuthState,
+    DisconnectReason,
+    fetchLatestBaileysVersion,
+    makeCacheableSignalKeyStore,
+    Browsers
+} from '@whiskeysockets/baileys';
+import P from 'pino';
+import { Boom } from '@hapi/boom';
+import chalk from 'chalk';
+import fs, { promises as fsPromises } from 'fs';
+import path, { join, dirname } from 'path';
+import { fileURLToPath, pathToFileURL } from 'url';
+import readline from 'readline';
+import qrcode from 'qrcode';
+import { EventEmitter } from 'events';
+import { LRUCache } from 'lru-cache';
+import debounce from 'lodash.debounce';
+import Agent from 'node:https';
+import { serialize } from '#simple';
+import { loadDB } from '#db';
+import config from '#config';
+import { handler, invalidateGroupCache } from '#handler';
+import printMessageLog from './lib/printlog.ts';
+import { handleGroupAlerts, handleGroupParticipants } from '#alertas';
+import { getSessionDir } from './lib/settings.ts';
+import { migrateLegacySession } from './lib/sessions.ts';
+import { initBridge, underPanel, EXIT_NEED_LINK } from './lib/bridge.ts';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = dirname(__filename);
+
+declare global {
+    var botName: string;
+    var plugins: Record<string, any>;
+    var eventBus: EventEmitter;
+    var broadcast: (event: string, payload: any) => void;
+}
+
+globalThis.botName = config?.botName || 'Denji bot';
+globalThis.plugins = globalThis.plugins || {};
+
+export const eventBus = globalThis.eventBus || new EventEmitter();
+eventBus.setMaxListeners(50);
+globalThis.eventBus = eventBus;
+
+export function broadcast(event: string, payload: any) {
+    eventBus.emit(event, { payload, timestamp: Date.now() });
+    eventBus.emit('*', { event, payload, timestamp: Date.now() });
+}
+
+globalThis.broadcast = broadcast;
+
+initBridge(eventBus);
+
+migrateLegacySession();
+const sDir = getSessionDir();
+
+const mStore = new LRUCache<string, any>({
+    max: 1000,
+    ttl: 1000 * 60 * 5
+});
+
+const httpAgent = new Agent.Agent({
+    keepAlive: true,
+    maxSockets: 100,
+    keepAliveMsecs: 15000,
+    scheduling: 'fifo'
+});
+
+const envMethod = (process.env.DENJI_METHOD || '').toLowerCase();
+const methodCodeQR = process.argv.includes("--qr") || envMethod === 'qr';
+const methodCode = process.argv.includes("code") || process.argv.includes("--code") || envMethod === 'code';
+const presetPhone = process.env.DENJI_PHONE || process.argv.find(a => a.startsWith('--phone='))?.slice(8) || '';
+
+let commandsWatcherStarted = false;
+let bannerShown = false;
+
+function requestLink(reason: string): Promise<never> {
+    console.log(chalk.yellow(`[ SESSION ] ${reason}`));
+    return new Promise<never>(() => {
+        const exit = () => process.exit(EXIT_NEED_LINK);
+        if (!underPanel()) return exit();
+        setTimeout(exit, 1000);
+        try {
+            process.send!({ type: 'need_link', reason }, exit);
+        } catch {
+            exit();
+        }
+    });
+}
+
+function normalizePhone(input: any) {
+    let s = String(input).replace(/\D/g, '');
+    if (!s) return '';
+    if (s.startsWith('0')) s = s.replace(/^0+/, '');
+    if (s.length === 10 && s.startsWith('3')) s = '57' + s;
+    if (s.startsWith('52') && !s.startsWith('521') && s.length >= 12) s = '521' + s.slice(2);
+    if (s.startsWith('54') && !s.startsWith('549') && s.length >= 11) s = '549' + s.slice(2);
+    return s;
+}
+
+const limpiarSesion = () => {
+    if (fs.existsSync(sDir)) {
+        try {
+            fs.rmSync(sDir, { recursive: true, force: true });
+        } catch {}
+    }
+};
+
+async function cargarPlugins(dir = './commands') {
+    const cmdDir = path.resolve(__dirname, dir);
+    if (!fs.existsSync(cmdDir)) return;
+
+    const newPlugins: Record<string, any> = {};
+
+    async function getAllFiles(directory: string): Promise<string[]> {
+        const entries = await fsPromises.readdir(directory, { withFileTypes: true });
+        const files = await Promise.all(entries.map(e => {
+            const res = join(directory, e.name);
+            return e.isDirectory() ? getAllFiles(res) : Promise.resolve([res]);
+        }));
+        return files.flat();
+    }
+
+    try {
+        const allFiles = await getAllFiles(cmdDir);
+        const files = allFiles.filter(f => 
+            (f.endsWith('.ts') || f.endsWith('.js')) && !f.endsWith('.d.ts')
+        );
+
+        const ts = Date.now();
+
+        await Promise.all(
+            files.map(async (fullPath) => {
+                try {
+                    const fileUrl = pathToFileURL(fullPath).href;
+                    const cmdModule = await import(`${fileUrl}?update=${ts}`);
+                    const plugin = cmdModule.default?.default || cmdModule.default || cmdModule;
+                    const pluginName = path.basename(fullPath);
+                    newPlugins[pluginName] = plugin;
+                } catch {}
+            })
+        );
+
+        globalThis.plugins = newPlugins;
+        broadcast('plugins_loaded', { count: Object.keys(newPlugins).length });
+    } catch (e) {
+        console.error(chalk.red('[ ERROR ] Error al cargar plugins:'), e);
+        broadcast('plugins_error', { error: String(e) });
+    }
+}
+
+const askQuestion = async (query: string): Promise<string> => {
+    const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+    return new Promise((resolve) => {
+        rl.question(query, (ans) => {
+            rl.close();
+            resolve(ans.trim());
+        });
+    });
+};
+
+const displayLoadingMessage = () => {
+    console.log(chalk.bold.white(`\n\nPor favor, Ingrese el número de WhatsApp.\n` +
+        `${chalk.bold.cyan("Ejemplo: +521XXXXXXXXXX")}\n` +
+        `${chalk.bold.white('---> ')} `));
+};
+
+async function startBot() {
+    await loadDB();
+    await cargarPlugins('./commands');
+
+    if (!fs.existsSync(sDir)) {
+        fs.mkdirSync(sDir, { recursive: true });
+    }
+
+    let { state, saveCreds } = await useMultiFileAuthState(sDir);
+    const { version } = await fetchLatestBaileysVersion();
+
+    let opcion: string = '';
+    let usarCodigo: boolean = false;
+
+    // `registered` solo se activa al vincular con código; con QR lo que queda
+    // guardado es `account`. Sin esta comprobación una sesión vinculada por QR
+    // se trataría como nueva y se borraría en cada reinicio.
+    const vinculada = Boolean(state.creds.registered || state.creds.account);
+
+    if (!vinculada) {
+        if (!bannerShown) {
+            bannerShown = true;
+            console.log(chalk.cyan(`
+      Denji | Wa Bot
+`));
+        }
+
+        if (methodCodeQR) {
+            opcion = '1';
+        } else if (methodCode) {
+            opcion = '2';
+            usarCodigo = true;
+        } else if (underPanel() || !process.stdin.isTTY) {
+            await requestLink('La sesión no está vinculada. Usa "Start" en el panel (npm start), o ejecuta "npm run qr" o "npm run code".');
+        } else {
+            let lineM = '⋯ ⋯ ⋯ ⋯ ⋯ ⋯ ⋯ ⋯ ⋯ ⋯ ⋯ 》';
+            console.log(chalk.white(`╭${lineM}`));
+            opcion = await askQuestion(
+                `┊ ${chalk.bold.cyan(' METODO DE VINCULACION ')}\n` +
+                `┊ ${chalk.bold.white('⇢ Opcion 1:')} ${chalk.cyan('Codigo QR.')}\n` +
+                `┊ ${chalk.bold.white('⇢ Opcion 2:')} ${chalk.cyan('Codigo de 8 digitos.')}\n` +
+                `╰${lineM}\n${chalk.bold.white('---> ')}`
+            );
+            usarCodigo = opcion === "2";
+        }
+
+        limpiarSesion();
+        fs.mkdirSync(sDir, { recursive: true });
+
+        const reloadedAuth = await useMultiFileAuthState(sDir);
+        state = reloadedAuth.state;
+        saveCreds = reloadedAuth.saveCreds;
+    }
+
+    const esQR = opcion === '1' || methodCodeQR;
+
+    broadcast('bot_status', { status: 'connecting' });
+
+    const sock = makeWASocket({
+        logger: P({ level: 'silent' }) as any,
+        printQRInTerminal: false,
+        version,
+        browser: Browsers.macOS('Safari'),
+        auth: {
+            creds: state.creds,
+            keys: makeCacheableSignalKeyStore(state.keys, P({ level: 'silent' }) as any)
+        },
+        markOnlineOnConnect: false,
+        emitOwnEvents: false,
+        generateHighQualityLinkPreview: false,
+        syncFullHistory: false,
+        downloadHistory: false,
+        fireInitQueries: false,
+        keepAliveIntervalMs: 30000,
+        connectTimeoutMs: 60000,
+        defaultQueryTimeoutMs: undefined,
+        retryRequestDelayMs: 250,
+        getMessage: async () => undefined,
+        fetchOpts: { agent: httpAgent } as any
+    });
+
+    if (usarCodigo && !vinculada) {
+        let num = presetPhone;
+        if (!num) {
+            if (underPanel() || !process.stdin.isTTY) {
+                await requestLink('Falta el número de WhatsApp para generar el código de vinculación.');
+            }
+            displayLoadingMessage();
+            num = await askQuestion('');
+        }
+        num = normalizePhone(num);
+
+        setTimeout(async () => {
+            try {
+                let code = await sock.requestPairingCode(num);
+                code = code?.match(/.{1,4}/g)?.join("-") || code;
+                console.log(chalk.white.bgBlue(` CODIGO DE VINCULACION `), chalk.white(`: ${code}`));
+                broadcast('pairing_code', { code });
+            } catch (err) {
+                console.log(chalk.red('[ ERROR ] Falla al generar código de vinculación:'), err);
+                limpiarSesion();
+                if (underPanel()) {
+                    await requestLink('No se pudo generar el código de vinculación. Revisa el número y tu conexión, e inténtalo de nuevo.');
+                }
+                setTimeout(() => startBot(), 2000);
+            }
+        }, 3000);
+    }
+
+    sock.ev.on('creds.update', async () => {
+        await saveCreds();
+    });
+
+    sock.ev.on('group-participants.update', async (update) => {
+        const { id, action } = update;
+        invalidateGroupCache(id);
+        broadcast('group_updated', { chatId: id, action });
+        await handleGroupParticipants(sock, update);
+    });
+
+    sock.ev.on('groups.update', async (updates) => {
+        await handleGroupAlerts(sock, updates);
+    });
+
+    sock.ev.on('connection.update', async (u) => {
+        const { connection, lastDisconnect, qr } = u;
+
+        if (qr && esQR) {
+            try {
+                if (underPanel()) {
+                    // El panel dibuja el QR a pantalla completa.
+                    console.log(chalk.bold.cyan('[ QR ] Nuevo código QR generado. Escanéalo desde WhatsApp > Dispositivos vinculados.'));
+                } else {
+                    const qrTerminal = await qrcode.toString(qr, { type: 'terminal', small: true });
+                    console.log(chalk.bold.cyan('\n[ QR ] ESCANEA EL SIGUIENTE CÓDIGO QR:\n'));
+                    console.log(qrTerminal);
+                }
+                broadcast('qr_generated', { qr });
+            } catch (err) {
+                console.log(chalk.red('[ ERROR ] Error al renderizar el código QR:'), err);
+            }
+        }
+
+        if (connection === 'open') {
+            (global as any).mainConn = sock;
+            console.log(chalk.bold.cyan(`\n✿ ${globalThis.botName} conectado y listo ✰\n`));
+            broadcast('bot_status', {
+                status: 'connected',
+                botName: globalThis.botName,
+                number: (sock.user?.id || '').split('@')[0].split(':')[0],
+                name: sock.user?.name || ''
+            });
+        }
+
+        if (connection === 'close') {
+            const statusCode = new Boom(lastDisconnect?.error)?.output?.statusCode;
+            const isStreamError = lastDisconnect?.error?.message?.includes('Stream Errored');
+            broadcast('bot_status', { status: 'disconnected', statusCode });
+
+            if (statusCode === 515 || isStreamError) {
+                console.log(chalk.yellow('[ RECONNECT ] Reiniciando socket por actualización de sesión...'));
+                setTimeout(() => startBot(), 2000);
+            } else if (statusCode === DisconnectReason.loggedOut) {
+                console.log(chalk.red('[ SESSION ] Sesión cerrada desde el teléfono. Limpiando...'));
+                limpiarSesion();
+                if (underPanel()) {
+                    await requestLink('La sesión se cerró desde el teléfono. Usa "Start" en el panel para vincularla de nuevo.');
+                }
+                setTimeout(() => startBot(), 2000);
+            } else {
+                console.log(chalk.yellow(`[ CONEXION ] Desconectado (Status ${statusCode}). Reintentando...`));
+                setTimeout(() => startBot(), 3000);
+            }
+        }
+    });
+
+    sock.ev.on('messages.upsert', ({ messages, type }) => {
+        if (type !== 'notify') return;
+
+        const len = messages.length;
+        const serializedCache = new Map();
+
+        for (let i = 0; i < len; i++) {
+            const rawMsg = messages[i];
+            const mId = rawMsg?.key?.id;
+            if (!mId || !rawMsg.message) continue;
+
+            const jid = rawMsg.key.remoteJid || '';
+            if (jid === 'status@broadcast' || jid.endsWith('@broadcast')) continue;
+
+            if (mStore.has(mId)) continue;
+            mStore.set(mId, true);
+
+            const msg = serialize(sock, rawMsg);
+            if (!msg) continue;
+
+            serializedCache.set(mId, msg);
+
+            handler(sock, rawMsg, msg).catch(() => {});
+
+            queueMicrotask(() => {
+                const cachedMsg = serializedCache.get(mId) || msg;
+                printMessageLog(cachedMsg, sock).catch(() => {});
+                broadcast('message_received', {
+                    id: mId,
+                    jid,
+                    pushName: rawMsg.pushName,
+                    body: cachedMsg.body?.substring(0, 100) || ''
+                });
+            });
+        }
+
+        if (serializedCache.size > 0) {
+            queueMicrotask(() => {
+                serializedCache.clear();
+            });
+        }
+    });
+
+    const commandsPath = path.join(__dirname, 'commands');
+    if (fs.existsSync(commandsPath) && !commandsWatcherStarted) {
+        commandsWatcherStarted = true;
+        const reloadCommandsDebounced = debounce(() => {
+            cargarPlugins('./commands').catch(() => {});
+        }, 300);
+
+        fs.watch(commandsPath, { recursive: true }, (_, filename) => {
+            if (filename && (filename.endsWith('.ts') || filename.endsWith('.js'))) {
+                reloadCommandsDebounced();
+            }
+        });
+    }
+}
+
+startBot().catch(() => {});
+
+const originalStdoutWrite = process.stdout.write.bind(process.stdout);
+const originalStderrWrite = process.stderr.write.bind(process.stderr);
+
+const filterNoise = (chunk: any, encoding?: any, callback?: any) => {
+    const str = typeof chunk === 'string' ? chunk : chunk.toString('utf8');
+    
+    if (
+        str.includes('Closing open session') ||
+        str.includes('Closing session') ||
+        str.includes('SessionEntry') ||
+        str.includes('ephemeralKeyPair') ||
+        str.includes('currentRatchet') ||
+        str.includes('prekey bundle') ||
+        str.includes('chainKey') ||
+        str.includes('registrationId') ||
+        str.includes('bad-mac') ||
+        str.includes('Bad MAC') ||
+        str.includes('Failed to decrypt') ||
+        str.includes('Session error') ||
+        str.includes('Session error:') ||
+        str.includes('Error: bad-mac')
+    ) {
+        if (typeof callback === 'function') callback();
+        return true;
+    }
+    
+    return originalStdoutWrite(chunk, encoding, callback);
+};
+
+process.stdout.write = filterNoise as any;
+process.stderr.write = filterNoise as any;
+
+process.on('uncaughtException', () => {});
+process.on('unhandledRejection', () => {});
+process.on('uncaughtExceptionMonitor', () => {});
