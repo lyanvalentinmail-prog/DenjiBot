@@ -1,0 +1,17 @@
+# Dependencias
+node_modules/
+package-lock.json
+yarn.lock
+
+# Datos locales del bot (no se suben ni se pisan con git pull)
+sessions/
+Session/
+database/
+settings.json
+logs/
+tmp/
+
+# Otros
+.tsbuildinfo
+*.log
+.DS_Store

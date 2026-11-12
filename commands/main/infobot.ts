@@ -1,0 +1,79 @@
+import os from 'os';
+import config from '#config';
+import { broadcast } from '#index';
+
+function formatUptime(seconds: number): string {
+    const d = Math.floor(seconds / (3600 * 24));
+    const h = Math.floor((seconds % (3600 * 24)) / 3600);
+    const m = Math.floor((seconds % 3600) / 60);
+    const s = Math.floor(seconds % 60);
+    
+    const parts = [];
+    if (d > 0) parts.push(`${d}d`);
+    if (h > 0) parts.push(`${h}h`);
+    if (m > 0) parts.push(`${m}m`);
+    parts.push(`${s}s`);
+    return parts.join(' ');
+}
+
+export default {
+    command: ['infobot', 'botinfo'],
+    description: 'Muestra la información general y del servidor del bot',
+    category: 'main',
+    group: true,
+    run: async (ctx: any) => {
+        const { sock, msg, chat, usedPrefix, prefix } = ctx;
+        const p = usedPrefix || prefix || config.prefix;
+
+        const botUptime = formatUptime(process.uptime());
+        
+        const totalMemNum = os.totalmem() / 1024 / 1024 / 1024;
+        const freeMemNum = os.freemem() / 1024 / 1024 / 1024;
+        const totalMem = totalMemNum.toFixed(2);
+        const freeMem = freeMemNum.toFixed(2);
+        const cpus = os.cpus();
+        const cpuModel = cpus[0]?.model.trim() || 'Desconocido';
+        const cpuCores = cpus.length;
+        const platformName = os.type() + ' ' + os.release();
+        const arch = os.arch();
+
+        queueMicrotask(() => {
+            broadcast('bot_info_requested', {
+                chat,
+                requestedBy: msg.sender,
+                systemStats: {
+                    uptimeSeconds: process.uptime(),
+                    freeMemGB: freeMemNum,
+                    totalMemGB: totalMemNum,
+                    cpuModel,
+                    cpuCores,
+                    platform: platformName,
+                    arch
+                }
+            });
+        });
+
+        const caption =
+            `✿ Información del Bot *${config.botName}*\n\n` +
+            `✿ *Nombre:* ${config.botName}\n` +
+            `✿ *Desarrollador:* ${config.devName}\n` +
+            `✦ *Moneda:* ${config.coin || '¥enes'}\n` +
+            `✦ *Prefijo:* ${p}\n\n` +
+            `❒ *Entorno:* ${platformName} (${arch})\n` +
+            `❒ *Procesador:* ${cpuModel}\n` +
+            `❒ *Núcleos:* ${cpuCores} vCPU\n` +
+            `❒ *Memoria RAM:* ${freeMem} GB / ${totalMem} GB\n` +
+            `❒ *Uptime:* ${botUptime}`;
+
+        if (config.icon) {
+            sock.sendMessage(chat, {
+                image: { url: config.icon },
+                caption
+            }, { quoted: msg }).catch(() => {
+                sock.sendMessage(chat, { text: caption }, { quoted: msg }).catch(() => {});
+            });
+        } else {
+            sock.sendMessage(chat, { text: caption }, { quoted: msg }).catch(() => {});
+        }
+    }
+};
