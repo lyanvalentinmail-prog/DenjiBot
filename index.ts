@@ -313,6 +313,8 @@ async function startBot() {
         if (connection === 'open') {
             (global as any).mainConn = sock;
             console.log(chalk.bold.cyan(`\n✿ ${globalThis.botName} conectado y listo ✰\n`));
+            // Juegos HTML: si quedaron partidas abiertas, se vuelve a escuchar su guardado.
+            import('./lib/games.ts').then(games => games.resumeGames(sock)).catch(err => console.log(chalk.red('[ GAMES ]'), err?.message || err));
             broadcast('bot_status', {
                 status: 'connected',
                 botName: globalThis.botName,

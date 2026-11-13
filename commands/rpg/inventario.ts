@@ -13,7 +13,7 @@ export default rpgCommand({
         if (!owned.length) {
             return reply(
                 `🎒 *INVENTARIO* » ${displayName(who)}\n\nLa mochila está vacía.\n\n` +
-                `> Consigue objetos con *${px}minar*, *${px}talar*, *${px}cazar*, *${px}lanzar* o *${px}mazmorra*.`);
+                `> Consigue objetos con *${px}minar*, *${px}talar*, *${px}cazar*, *${px}fish* o *${px}mazmorra*.`);
         }
 
         const lines = [`🎒 *INVENTARIO* » ${displayName(who)}`];

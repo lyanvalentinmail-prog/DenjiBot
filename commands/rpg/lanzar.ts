@@ -10,7 +10,7 @@ export default rpgCommand({
         startCooldown(p, 'lanzar');
 
         if (chance(hasRod ? 0.12 : 0.25)) {
-            return reply(`🎣 Lanzaste el anzuelo... y el pez se escapó.\n\n> Vuelve a intentarlo cuando pase la espera.`);
+            return reply(`🎣 Lanzaste el anzuelo... y el pez se escapó.\n\n> Prueba el juego completo con *${px}fish*: ahí tú decides cuándo tirar.`);
         }
 
         // Sin caña solo pican los peces comunes.
