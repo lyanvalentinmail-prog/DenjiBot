@@ -75,7 +75,7 @@ npm start
 | `3` | **Sesiones** | Lista las sesiones guardadas (número, tamaño, última actividad), permite crear otra y elegir cuál usa el bot. |
 | `4` | **Eliminar sesiones** | Borra una sesión o todas (pide confirmación). |
 | `5` | **Actualizar bot** | Ejecuta `git pull`, ofrece instalar dependencias si cambiaron y reiniciar el bot. |
-| `6` | **Personalizar bot** | Estilo del menú (lista o texto), nombre, prefijo, moneda, desarrollador, dueños, banner, logs y reinicio automático. |
+| `6` | **Personalizar bot** | Estilo y formato del menú, reacciones, nombre, prefijo, moneda, desarrollador, dueños, banners, logs y reinicio automático. |
 | `7` | **Detener bot** | Aparece cuando el bot está encendido. |
 | `0` | **Salir** | Cierra el panel (y apaga el bot). |
 
@@ -101,21 +101,29 @@ El **dashboard** muestra: estado y número del bot, tiempo encendido, memoria, u
 
 Los cambios se guardan en `settings.json` y el bot los aplica al instante, sin reiniciar. Ese archivo no se sube a git, así que `git pull` nunca pisa tu configuración.
 
-- **Estilo del menú**: `lista` envía un mensaje interactivo con un botón que despliega las categorías; `texto` envía el menú clásico completo. Con cualquier estilo, `.menu todo` muestra todos los comandos y `.menu <categoría>` solo una categoría. Los dueños también pueden cambiarlo desde WhatsApp con `.setmenu lista` o `.setmenu texto`.
+- **Estilo del menú**: el diseño con el que se escribe el menú. Hay tres: **Denji style** (el original), **Chainsaw man style** y **Simple style**. Al mover la selección el panel muestra un ejemplo de cada uno y con Enter se activa. Cada estilo puede tener su propio banner (*Banner de cada estilo*); mientras no lo tenga usa el banner principal. Los dueños también pueden cambiarlo desde WhatsApp con `.setmenu denji`, `.setmenu chainsaw` o `.setmenu simple`.
+- **Formato del menú**: `lista` envía un mensaje interactivo con un botón que despliega las categorías; `texto` envía el menú completo en un mensaje. Con cualquier formato, `.menu todo` muestra todos los comandos y `.menu <categoría>` solo una categoría. Desde WhatsApp: `.setmenu lista` o `.setmenu texto`.
+- **Reacciones**: el bot reacciona con un emoji al mensaje de quien usa un comando. Por defecto 🕘 mientras prepara la respuesta (*Espera / cargando*) y ⭐️ al terminar (*Listo*). Puedes cambiar cada emoji, quitarlo o apagar todas las reacciones. También puedes añadir reacción a otros momentos, que vienen sin emoji: *Error*, *Sin permiso* y *Comando desconocido*; y en *Por comando* darle a un comando su propio emoji, que sustituye al de *Listo* (por ejemplo `sticker` → 🎨).
 - **Dueños**: números que pueden usar los comandos de dueño. Por defecto no hay ninguno: añade el tuyo aquí.
-- **Banner**: imagen del menú. Por defecto `assets/banner.jpg`; admite una ruta dentro del bot o una URL.
+- **Banner principal**: imagen del bot (menú, perfil e información). Por defecto `assets/banner.jpg`; admite una ruta dentro del bot o una URL.
 
 ### **`PACKS DE STICKERS (.spack)`**
 
 1. Envía tus fotos con el mensaje `.spack` (puedes mandar varias a la vez). Opcional: `.spack Nombre | Autor`.
 2. El bot las carga y te avisa cuántas lleva. Mientras el pack esté abierto, cada foto que envíes se agrega (hasta 60). Para agregar un sticker que ya existe, respóndele con `.spack`.
-3. `.done` cierra el pack y lo envía como paquete de stickers para añadirlo a WhatsApp. `.cancel` lo descarta.
+3. `.done` cierra el pack y lo envía como paquete de stickers para añadirlo a WhatsApp (`.spack done` hace lo mismo). `.cancel` lo descarta.
+
+`.done` es parte de `.spack`, por eso no aparece como comando aparte en el menú.
 
 Si tu WhatsApp no muestra el paquete, `.done stickers` envía los stickers uno por uno. El pack se cancela solo tras 15 minutos sin actividad.
 
 ### **`HORA EXACTA (.hora)`**
 
-`.hora` responde con la hora, la fecha y la zona horaria, y adjunta un archivo HTML con un reloj que puedes abrir desde WhatsApp. Sin indicar lugar usa el país de tu número; también acepta `.hora españa`, `.hora tokio` o `.hora America/Bogota`. Abierto con el navegador (por ejemplo Chrome) el reloj funciona en vivo; en visores sin JavaScript muestra la hora del momento en que lo pediste.
+`.hora` muestra un reloj en vivo **dentro del chat**: una vista HTML con reloj analógico y digital, la fecha y la hora de otras zonas, que WhatsApp dibuja en la propia burbuja del mensaje (no es una foto, un video ni un archivo). Debajo llega un mensaje con la hora, la fecha y la zona en texto.
+
+Sin indicar lugar usa el país de tu número; también acepta `.hora españa`, `.hora tokio` o `.hora America/Bogota`.
+
+La vista HTML usa el mismo tipo de mensaje con el que WhatsApp muestra las respuestas de Meta AI. No es una función documentada: depende de la versión de WhatsApp de quien lo recibe y puede dejar de funcionar. Si en tu teléfono no se ve el reloj, `.hora archivo` (o `.hora archivo tokio`) lo envía como archivo `.html` para abrirlo con el navegador; el bot hace lo mismo por su cuenta cuando WhatsApp rechaza la vista.
 
 ### **`OTROS COMANDOS`**
 

@@ -238,10 +238,14 @@ const escapeHtml = (text: string): string =>
 // Texto seguro dentro de un <script>.
 const json = (value: unknown): string => JSON.stringify(value).replace(/</g, '\\u003c');
 
-/** Página HTML con el reloj de una zona. */
-export function clockHtml(target: Zone, botName: string, now: Date = new Date()): string {
+/**
+ * Reloj de una zona como bloque HTML autocontenido (estilos, marcado y script,
+ * sin recursos externos). Todo va bajo la clase `dj` para poder incrustarlo tal
+ * cual en la vista HTML del chat (`lib/richhtml.ts`).
+ */
+export function clockFragment(target: Zone, botName: string, now: Date = new Date(), note = 'Hora del momento en que se pidió el comando.'): string {
     const info = clockInfo(target.zone, now);
-    const others = WORLD.filter(item => item.zone !== target.zone);
+    const others = WORLD.filter(item => item.zone !== target.zone).slice(0, 8);
 
     const hourAngle = ((info.hours % 12) + info.minutes / 60 + info.seconds / 3600) * 30;
     const minuteAngle = (info.minutes + info.seconds / 60) * 6;
@@ -261,88 +265,73 @@ export function clockHtml(target: Zone, botName: string, now: Date = new Date())
         numbers += `<text x="${x}" y="${y}" class="num${hour % 3 === 0 ? ' big' : ''}">${hour}</text>`;
     }
 
-    const rows = others.map((item, index) => {
+    const cells = others.map((item, index) => {
         const other = clockInfo(item.zone, now);
-        return `<li><span class="pl">${escapeHtml(item.label)}</span><span class="of">${other.offset}</span><span class="tm" id="w${index}">${other.short}</span></li>`;
+        return `<div class="w"><span class="pl">${escapeHtml(item.label)}</span><span class="tm" id="dj-w${index}">${other.short}</span></div>`;
     }).join('');
 
-    return `<!DOCTYPE html>
-<html lang="es">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<meta name="theme-color" content="#0d0f14">
-<title>Hora exacta · ${escapeHtml(target.label)}</title>
-<style>
-*{box-sizing:border-box;margin:0;padding:0}
-html,body{min-height:100%}
-body{background:#0d0f14;color:#f3f4f7;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"Helvetica Neue",Arial,sans-serif;display:flex;justify-content:center;padding:20px 14px 28px;-webkit-text-size-adjust:100%}
-.card{width:100%;max-width:420px}
-.top{display:flex;align-items:center;justify-content:space-between;margin-bottom:14px}
-.brand{font-size:13px;font-weight:700;letter-spacing:.14em;text-transform:uppercase;color:#ff7a1a}
-.live{display:none;align-items:center;font-size:11px;font-weight:700;letter-spacing:.1em;color:#3ddc84;border:1px solid rgba(61,220,132,.4);border-radius:999px;padding:4px 10px}
-.live i{width:7px;height:7px;border-radius:50%;background:#3ddc84;margin-right:6px;animation:pulse 1.6s ease-in-out infinite}
-.js .live{display:flex}
-@keyframes pulse{50%{opacity:.25}}
-.panel{background:#161a22;border:1px solid #232a36;border-radius:22px;padding:22px 18px 20px;text-align:center}
-.place{font-size:22px;font-weight:700}
-.zone{margin-top:4px;font-size:13px;color:#8d96a6}
-svg{display:block;width:100%;max-width:260px;height:auto;margin:18px auto 14px}
-.face{fill:#0f1319;stroke:#2a3240;stroke-width:2}
-.tk{stroke:#465063;stroke-width:1.5;stroke-linecap:round}
-.tk.mj{stroke:#aab3c2;stroke-width:2.5}
-.num{fill:#7f8898;font-size:13px;font-weight:600;text-anchor:middle}
-.num.big{fill:#f3f4f7;font-size:17px;font-weight:700}
-.hh,.mh{stroke:#f3f4f7;stroke-linecap:round}
-.hh{stroke-width:6}
-.mh{stroke-width:4}
-.sh{stroke:#ff7a1a;stroke-width:2;stroke-linecap:round}
-.cap{fill:#ff7a1a;stroke:#0f1319;stroke-width:2}
-.time{font-size:54px;font-weight:700;line-height:1;letter-spacing:.01em;font-variant-numeric:tabular-nums;font-feature-settings:"tnum"}
-.time small{font-size:.55em;font-weight:600;color:#ff7a1a}
-.date{margin-top:10px;font-size:15px;color:#c3cad6}
-.date:first-letter{text-transform:uppercase}
-.note{margin-top:14px;font-size:12px;line-height:1.45;color:#8d96a6}
-.js .note{display:none}
-h2{margin:22px 4px 8px;font-size:12px;font-weight:700;letter-spacing:.12em;text-transform:uppercase;color:#8d96a6}
-ul{list-style:none;background:#161a22;border:1px solid #232a36;border-radius:18px;padding:4px 16px}
-li{display:flex;align-items:center;padding:11px 0;border-top:1px solid #232a36;font-size:15px}
-li:first-child{border-top:0}
-.pl{flex:1;text-align:left}
-.of{font-size:12px;color:#8d96a6;margin-right:12px}
-.tm{font-weight:700;font-variant-numeric:tabular-nums;font-feature-settings:"tnum"}
-.foot{margin-top:18px;text-align:center;font-size:12px;color:#5d6676}
-@media (max-width:340px){.time{font-size:44px}.place{font-size:19px}}
+    return `<style>
+html,body{margin:0;padding:0;background:transparent}
+.dj,.dj *{box-sizing:border-box;margin:0;padding:0}
+.dj{width:100%;max-width:420px;margin:0 auto;padding:14px 12px 12px;border-radius:18px;background:#0d0f14;color:#f3f4f7;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"Helvetica Neue",Arial,sans-serif;text-align:center;-webkit-text-size-adjust:100%;-webkit-tap-highlight-color:transparent}
+.dj .top{display:flex;align-items:center;justify-content:space-between;margin-bottom:10px}
+.dj .brand{font-size:12px;font-weight:700;letter-spacing:.14em;text-transform:uppercase;color:#ff7a1a;text-align:left}
+.dj .live{display:none;align-items:center;font-size:10px;font-weight:700;letter-spacing:.1em;color:#3ddc84;border:1px solid rgba(61,220,132,.4);border-radius:999px;padding:3px 9px;white-space:nowrap}
+.dj .live i{width:6px;height:6px;border-radius:50%;background:#3ddc84;margin-right:6px;animation:dj-pulse 1.6s ease-in-out infinite}
+.dj.on .live{display:flex}
+@keyframes dj-pulse{50%{opacity:.25}}
+.dj .panel{background:#161a22;border:1px solid #232a36;border-radius:16px;padding:16px 12px 14px}
+.dj .place{font-size:20px;font-weight:700;line-height:1.2}
+.dj .zone{margin-top:3px;font-size:12px;color:#8d96a6}
+.dj svg{display:block;width:100%;max-width:210px;height:auto;margin:14px auto 12px}
+.dj .face{fill:#0f1319;stroke:#2a3240;stroke-width:2}
+.dj .tk{stroke:#465063;stroke-width:1.5;stroke-linecap:round}
+.dj .tk.mj{stroke:#aab3c2;stroke-width:2.5}
+.dj .num{fill:#7f8898;font-size:13px;font-weight:600;text-anchor:middle}
+.dj .num.big{fill:#f3f4f7;font-size:17px;font-weight:700}
+.dj .hh,.dj .mh{stroke:#f3f4f7;stroke-linecap:round}
+.dj .hh{stroke-width:6}
+.dj .mh{stroke-width:4}
+.dj .sh{stroke:#ff7a1a;stroke-width:2;stroke-linecap:round}
+.dj .cap{fill:#ff7a1a;stroke:#0f1319;stroke-width:2}
+.dj .time{font-size:46px;font-weight:700;line-height:1;font-variant-numeric:tabular-nums;font-feature-settings:"tnum"}
+.dj .time small{font-size:.55em;font-weight:600;color:#ff7a1a}
+.dj .date{margin-top:8px;font-size:14px;line-height:1.3;color:#c3cad6}
+.dj .date:first-letter{text-transform:uppercase}
+.dj .note{margin-top:10px;font-size:11px;line-height:1.4;color:#8d96a6}
+.dj.on .note{display:none}
+.dj .ws{display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-top:10px}
+.dj .w{display:flex;align-items:center;justify-content:space-between;min-width:0;background:#161a22;border:1px solid #232a36;border-radius:10px;padding:7px 9px;font-size:12px}
+.dj .pl{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:#c3cad6;text-align:left}
+.dj .tm{margin-left:6px;font-weight:700;font-variant-numeric:tabular-nums;font-feature-settings:"tnum"}
+@media (max-width:300px){.dj .time{font-size:38px}.dj .place{font-size:18px}.dj .w{font-size:11px;padding:6px 7px}}
+@media (max-width:230px){.dj .ws{grid-template-columns:1fr}}
 </style>
-</head>
-<body>
-<div class="card">
+<div class="dj" id="dj">
 <div class="top"><span class="brand">${escapeHtml(botName)}</span><span class="live"><i></i>EN VIVO</span></div>
 <div class="panel">
 <div class="place">${escapeHtml(target.label)}</div>
-<div class="zone"><span>${escapeHtml(target.zone)}</span> · <span id="offset">${info.offset}</span></div>
+<div class="zone">${escapeHtml(target.zone)} · ${info.offset}</div>
 <svg viewBox="0 0 260 260" role="img" aria-label="Reloj">
 <circle cx="130" cy="130" r="124" class="face"/>
 ${ticks}
 ${numbers}
-<line id="hh" x1="130" y1="140" x2="130" y2="72" class="hh" transform="rotate(${hourAngle.toFixed(2)} 130 130)"/>
-<line id="mh" x1="130" y1="144" x2="130" y2="44" class="mh" transform="rotate(${minuteAngle.toFixed(2)} 130 130)"/>
-<line id="sh" x1="130" y1="152" x2="130" y2="34" class="sh" transform="rotate(${secondAngle.toFixed(2)} 130 130)"/>
+<line id="dj-hh" x1="130" y1="140" x2="130" y2="72" class="hh" transform="rotate(${hourAngle.toFixed(2)} 130 130)"/>
+<line id="dj-mh" x1="130" y1="144" x2="130" y2="44" class="mh" transform="rotate(${minuteAngle.toFixed(2)} 130 130)"/>
+<line id="dj-sh" x1="130" y1="152" x2="130" y2="34" class="sh" transform="rotate(${secondAngle.toFixed(2)} 130 130)"/>
 <circle cx="130" cy="130" r="6" class="cap"/>
 </svg>
-<div class="time"><span id="hm">${info.short}</span><small id="ss">:${info.time.slice(6)}</small></div>
-<div class="date" id="date">${escapeHtml(info.date)}</div>
-<div class="note">Esta es la hora del momento en que pediste el comando. Abre el archivo con tu navegador (por ejemplo Chrome) para ver el reloj en vivo.</div>
+<div class="time"><span id="dj-hm">${info.short}</span><small id="dj-ss">:${info.time.slice(6)}</small></div>
+<div class="date" id="dj-date">${escapeHtml(info.date)}</div>
+<div class="note">${escapeHtml(note)}</div>
 </div>
-<h2>Otras zonas</h2>
-<ul>${rows}</ul>
-<div class="foot">Hora exacta · ${escapeHtml(botName)}</div>
+<div class="ws">${cells}</div>
 </div>
 <script>
 (function () {
   var zone = ${json(target.zone)};
   var world = ${json(others.map(item => item.zone))};
-  var el = function (id) { return document.getElementById(id); };
+  var el = function (id) { return document.getElementById('dj-' + id); };
   var two = function (n) { return (n < 10 ? '0' : '') + n; };
 
   function parts(z, d) {
@@ -378,11 +367,29 @@ ${numbers}
 
   try {
     tick();
-    document.documentElement.className = 'js';
+    document.getElementById('dj').className = 'dj on';
     setInterval(tick, 100);
   } catch (e) {}
 })();
-</script>
+</script>`;
+}
+
+/** Página HTML completa con el reloj, para enviarla como archivo. */
+export function clockHtml(target: Zone, botName: string, now: Date = new Date()): string {
+    const note = 'Hora del momento en que se pidió el comando. Abre el archivo con tu navegador (por ejemplo Chrome) para ver el reloj en vivo.';
+    return `<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="theme-color" content="#0d0f14">
+<title>Hora exacta · ${escapeHtml(target.label)}</title>
+<style>.page{min-height:100vh;background:#0d0f14;padding:10px 4px 20px}</style>
+</head>
+<body>
+<div class="page">
+${clockFragment(target, botName, now, note)}
+</div>
 </body>
 </html>
 `;

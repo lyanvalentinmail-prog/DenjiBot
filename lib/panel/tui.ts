@@ -42,6 +42,14 @@ export const c = {
 
 const ANSI = /\u001b\[[0-9;?]*[ -/]*[@-~]|\u001b\][^\u0007\u001b]*(?:\u0007|\u001b\\)|\u001b[@-Z\\-_]/y;
 
+const WIDE_EMOJI = new Set<number>([
+    0x231a, 0x231b, 0x23e9, 0x23ea, 0x23eb, 0x23ec, 0x23f0, 0x23f3, 0x25fd, 0x25fe, 0x2614, 0x2615,
+    0x2648, 0x2649, 0x264a, 0x264b, 0x264c, 0x264d, 0x264e, 0x264f, 0x2650, 0x2651, 0x2652, 0x2653,
+    0x267f, 0x2693, 0x26a1, 0x26aa, 0x26ab, 0x26bd, 0x26be, 0x26c4, 0x26c5, 0x26ce, 0x26d4, 0x26ea,
+    0x26f2, 0x26f3, 0x26f5, 0x26fa, 0x26fd, 0x2705, 0x270a, 0x270b, 0x2728, 0x274c, 0x274e, 0x2753,
+    0x2754, 0x2755, 0x2757, 0x2795, 0x2796, 0x2797, 0x27b0, 0x27bf, 0x2b1b, 0x2b1c, 0x2b50, 0x2b55
+]);
+
 function charWidth(cp: number): number {
     if (cp < 32 || (cp >= 0x7f && cp < 0xa0)) return 0;
     if (
@@ -70,6 +78,8 @@ function charWidth(cp: number): number {
             (cp >= 0x20000 && cp <= 0x3fffd)
         )
     ) return 2;
+    // Emojis del bloque básico que las terminales dibujan a doble ancho.
+    if (cp >= 0x231a && cp <= 0x2b55 && WIDE_EMOJI.has(cp)) return 2;
     return 1;
 }
 
@@ -299,6 +309,11 @@ export interface SelectConfig<T> {
     initial?: number;
     tick?: number;
     onTick?: () => void;
+    /**
+     * Líneas que se muestran debajo de la lista para la opción señalada (por
+     * ejemplo, una vista previa). Se recortan al espacio libre de la pantalla.
+     */
+    preview?: (value: T) => string[];
 }
 
 export function select<T>(config: SelectConfig<T>): Promise<T> {
@@ -317,7 +332,9 @@ export function select<T>(config: SelectConfig<T>): Promise<T> {
                 const lines = [...header, ''];
 
                 // Si la lista no cabe en pantalla se muestra una ventana alrededor de la selección.
-                const room = Math.max(3, rows() - header.length - 4);
+                // Con vista previa, la lista cede sitio (hasta quedarse en 5 filas).
+                const total = rows() - header.length - 4;
+                const room = Math.max(3, config.preview ? Math.min(total, Math.max(5, total - 6)) : total);
                 let start = 0;
                 if (options.length > room) {
                     start = Math.max(0, Math.min(index - Math.floor(room / 2), options.length - room));
@@ -332,6 +349,19 @@ export function select<T>(config: SelectConfig<T>): Promise<T> {
                     const label = selected ? c.accentBold(pad(option.label, labelSize)) : c.white(pad(option.label, labelSize));
                     const hint = option.hint ? '  ' + c.dim(option.hint) : '';
                     lines.push(`${pointer}${c.dim(key)}${label}${hint}`);
+                }
+
+                if (config.preview && options[index]) {
+                    const free = rows() - lines.length - 3;
+                    const preview = config.preview(options[index]!.value);
+                    if (preview.length && free >= 3) {
+                        lines.push('');
+                        if (preview.length > free) {
+                            lines.push(...preview.slice(0, free - 1), ' ' + c.dim('…'));
+                        } else {
+                            lines.push(...preview);
+                        }
+                    }
                 }
 
                 const more = options.length > room ? ` (${index + 1}/${options.length})` : '';

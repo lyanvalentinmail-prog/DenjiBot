@@ -6,6 +6,7 @@ import { broadcast } from '#index';
 import { LRUCache } from 'lru-cache';
 import * as linkify from 'linkifyjs';
 import { collectPackMedia, isLoosePhoto } from './lib/stickerpack.ts';
+import { createReactor } from './lib/reactions.ts';
 
 const handlerConfig = (config as any)?.handler || {};
 const metaTtlMs = handlerConfig.metaTtl || 300000;
@@ -285,9 +286,20 @@ export const handler = async (sock: any, rawMsg: any): Promise<any> => {
 
     syncCommandMapIfNeeded();
     const cmd = commandMap.get(rawCommand.toLowerCase()) || commandMap.get(normalizeString(rawCommand));
-    if (!cmd) return;
+
+    // Reacciones al mensaje del comando (Personalizar bot › Reacciones).
+    const reactor = createReactor(sock, msg);
+
+    if (!cmd) {
+        // Solo si parece un comando ("..." o ".-." no lo son).
+        if (/^[\p{L}\p{N}_-]+$/u.test(rawCommand)) reactor.event('unknown');
+        return;
+    }
+
+    const aliases: string[] = (Array.isArray(cmd.command) ? cmd.command : [cmd.command]).map(String);
 
     if (cmd.owner && !isOwner) {
+        reactor.event('denied');
         queueMicrotask(() => {
             broadcast('security_event', {
                 type: 'unauthorized_access',
@@ -299,11 +311,13 @@ export const handler = async (sock: any, rawMsg: any): Promise<any> => {
         return msg.reply('ׅ  ׄ  ✿ Este comando solo puede ser utilizado por el dueño del bot.');
     }
     if (cmd.group && !isGroup) {
+        reactor.event('denied');
         return msg.reply('ׅ  ׄ  ✿ Este comando solo se puede usar en grupos.');
     }
 
     const onlyAdminEnabled = currentChatDb.adminonly === true;
     if (onlyAdminEnabled && !isAdmins && !isOwner) {
+        reactor.event('denied');
         if (!adminOnlyWarned.has(chat)) {
             adminOnlyWarned.set(chat, new Set());
         }
@@ -316,6 +330,7 @@ export const handler = async (sock: any, rawMsg: any): Promise<any> => {
     }
 
     if (cmd.admin && !isAdmins && !isOwner) {
+        reactor.event('denied');
         queueMicrotask(() => {
             broadcast('security_event', {
                 type: 'unauthorized_admin_command',
@@ -327,6 +342,7 @@ export const handler = async (sock: any, rawMsg: any): Promise<any> => {
         return msg.reply('ׅ  ׄ  ✿ Necesitas ser administrador del grupo para usar este comando.');
     }
     if (cmd.botAdmin && !isBotAdmins) {
+        reactor.event('denied');
         return msg.reply('ׅ  ׄ  ✿ El bot necesita ser administrador del grupo para ejecutar este comando.');
     }
 
@@ -402,9 +418,15 @@ export const handler = async (sock: any, rawMsg: any): Promise<any> => {
             });
         });
 
+        // "Espera" mientras se prepara la respuesta; al terminar pasa a "listo"
+        // (o al emoji propio del comando) y, si falla, a "error".
+        reactor.event('wait');
+
         try {
             const result = await cmd._exec(ctx);
-            
+
+            reactor.event('done', [rawCommand, ...aliases]);
+
             queueMicrotask(() => {
                 broadcast('command_executed', {
                     command: rawCommand,
@@ -416,6 +438,7 @@ export const handler = async (sock: any, rawMsg: any): Promise<any> => {
 
             return result;
         } catch (e: any) {
+            reactor.event('error');
             logHandlerError(e);
         }
     }

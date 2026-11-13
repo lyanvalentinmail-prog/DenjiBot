@@ -1,5 +1,7 @@
 import config from '#config';
 import { sendList } from '#interactive';
+import { listTexts, renderMenu } from '../../lib/menustyles.ts';
+import type { MenuCategory, MenuData } from '../../lib/menustyles.ts';
 
 const ord = ['main', 'info', 'download', 'profile', 'admin', 'stickers', 'tools', 'utils', 'fun', 'game', 'economy', 'gacha', 'anime', 'nsfw', 'otros', 'logo'];
 const idx = new Map(ord.map((c, i) => [c, i]));
@@ -23,8 +25,6 @@ const emojis: { [k: string]: string } = {
     'logo': '🍰'
 };
 
-const rmore = String.fromCharCode(8206).repeat(4000);
-
 // `.menu todo` muestra siempre el menú completo en texto, sea cual sea el estilo.
 const fullWords = new Set(['todo', 'todos', 'all', 'completo']);
 
@@ -38,7 +38,8 @@ export default {
         const p = usedPrefix || prefix || config.prefix || '.';
 
         try {
-            const url = config.banner;
+            // Banner del estilo activo (si no tiene uno propio, es el principal).
+            const url = config.menuBanner || config.banner;
             const user = msg.pushName || 'Usuario';
             const link = 'https://github.com/lyanvalentinmail-prog/DenjiBot';
             const plg = global.plugins || {};
@@ -93,35 +94,45 @@ export default {
                 return a.localeCompare(b);
             });
 
+            const theme = config.menuTheme;
+            const data: MenuData = {
+                botName: config.botName,
+                devName: config.devName,
+                coin: config.coin || '¥enes',
+                prefix: p,
+                user,
+                total: tot,
+                link
+            };
+            const list: MenuCategory[] = scats.map(c => ({
+                name: c,
+                emoji: emojis[c] || '✦',
+                commands: cats.get(c)!
+            }));
+
             // Menú de lista: un mensaje interactivo con las categorías; al elegir
             // una, WhatsApp envía `.menu <categoría>` y se responde con sus comandos.
             if (listMode && !carg && !wantsFull) {
                 try {
-                    const rows = scats.map(c => ({
-                        title: `${emojis[c] || '✦'} ${c.toUpperCase()}`.slice(0, 24),
-                        description: `${cats.get(c)!.length} comandos`,
-                        id: `${p}menu ${c}`
+                    const texts = listTexts(theme, data);
+                    const rows = list.map(c => ({
+                        title: texts.rowTitle(c),
+                        description: `${c.commands.length} comandos`,
+                        id: `${p}menu ${c.name}`
                     }));
 
                     await sendList(sock, chat, {
                         title: config.botName,
-                        text:
-                            `「 ꕤ 」 ¡Hola! *${user}*, soy *${config.botName}*.\n\n` +
-                            `ׅ  ׄ  ✿ *Desarrollador* » ${config.devName}\n` +
-                            `ׅ  ׄ  ✿ *Moneda* » ${config.coin || '¥enes'}\n` +
-                            `ׅ  ׄ  ✿ *Comandos* » ${tot}\n` +
-                            `ׅ  ׄ  ✿ *Prefijo* » ${p}\n\n` +
-                            `Toca el botón para elegir una categoría.\n` +
-                            `> Si no ves el botón, usa *${p}menu todo*`,
+                        text: texts.text,
                         footer: config.botName,
-                        buttonText: 'Ver categorías',
+                        buttonText: texts.buttonText,
                         image: url || undefined,
                         sections: [
-                            { title: 'Categorías', rows },
+                            { title: texts.sectionTitle, rows },
                             {
                                 title: 'Otros',
                                 rows: [{
-                                    title: '📋 Menú completo',
+                                    title: texts.fullRowTitle,
                                     description: 'Todos los comandos en un solo mensaje',
                                     id: `${p}menu todo`
                                 }]
@@ -134,25 +145,7 @@ export default {
                 }
             }
 
-            let menu = `︶⊹︶︶୨୧︶︶⊹︶︶⊹︶︶୨୧︶︶⊹\n「 ꕤ 」 ¡Hola! *${user}*, Soy *${config.botName}*, Aquí tienes la lista de comandos.\n> Para Ver Tu Perfil Usa *${p}perfil* 𝜗ৎ\n\n‿    ׅ   𝆬     ε❤︎︭з   𝆬     ׅ      ‿\n\nׅ  ׄ  ✿ *Modo* » Premium\nׅ  ׄ  ✿ *Desarrollador* » ${config.devName}\nׅ  ׄ  ✿ *Moneda* » ${config.coin || '¥enes'}\nׅ  ׄ  ✿ *Comandos* » ${tot}\nׅ  ׄ  ✿ *Link* » ${link}\n\n‿    ׅ   𝆬     ε❤︎︭з   𝆬     ׅ      ‿\n${rmore}\n\n⋆｡ﾟ☁︎ ｡° *ᴄᴏᴍ꯭ᴀ꯭ɴᴅᴏs* ﾟ｡˚₊ 𓂃\n`;
-
-            for (let i = 0; i < scats.length; i++) {
-                const c = scats[i];
-                const cmds = cats.get(c)!;
-                const cname = c.toUpperCase();
-                const cemo = emojis[c] || '✦';
-
-                menu += `\n☕︎  𝀢  デンジᅟ֪   ﹙ *\`${cname}\`* ﹚ᅟ ㅤ✿\n\n`;
-                for (let j = 0; j < cmds.length; j++) {
-                    const item = cmds[j];
-                    const astr = item.cmd.map(a => `*${p}${a}*`).join(' › ');
-                    const utxt = item.usage ? ` + _${item.usage}_` : '';
-                    menu += `❀   ᠀᠀ㅤ۟ ${cemo}  ${astr}${utxt}\n> ── 𑁪ㅤׅㅤ۫  ${item.desc}\n`;
-                }
-                menu += `\n ㅤׅㅤ۫ㅤㅤ      ﹙❀﹚ㅤׅㅤㅤ˚ㅤ\n`;
-            }
-
-            menu += `\n> ׅ  ׄ  ✿  Made with love by *${config.devName}*`;
+            const menu = renderMenu(theme, data, list);
 
             // En modo lista, la vista de una categoría va solo en texto (más rápida).
             const body = url && !(listMode && carg)

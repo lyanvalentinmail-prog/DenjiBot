@@ -34,8 +34,13 @@ async function runPanel(): Promise<void> {
     const { bot, isRunning, startBot, stopBot, restartBot, killBotNow, panelLog } = await import('./lib/panel/bot.ts');
     const {
         ROOT, loadSettings, saveSettings, resetSettings, cleanNumber, isValidSessionName,
-        DEFAULT_BANNER, LOG_MODES
+        DEFAULT_BANNER, LOG_MODES, MENU_THEMES, MENU_THEME_NAMES, REACTION_EVENTS, REACTION_EVENT_NAMES,
+        REACTION_EVENT_HINTS, MAX_COMMAND_REACTIONS, cleanEmoji, cleanCommandName
     } = await import('./lib/settings.ts');
+    const { sampleMenu } = await import('./lib/menustyles.ts');
+
+    type MenuTheme = (typeof MENU_THEMES)[number];
+    type ReactionEvent = (typeof REACTION_EVENTS)[number];
     const { listSessions, readSession, deleteSession, migrateLegacySession } = await import('./lib/sessions.ts');
     const { collectStats } = await import('./lib/stats.ts');
 
@@ -170,7 +175,7 @@ async function runPanel(): Promise<void> {
                     { label: 'Sesiones', hint: 'Ver, crear y elegir', value: 'sessions', key: '3' },
                     { label: 'Eliminar sesiones', hint: 'Borrar vinculaciones', value: 'delete', key: '4' },
                     { label: 'Actualizar bot', hint: 'git pull', value: 'update', key: '5' },
-                    { label: 'Personalizar bot', hint: 'Menú, nombre, prefijo…', value: 'customize', key: '6' }
+                    { label: 'Personalizar bot', hint: 'Menú, reacciones, nombre…', value: 'customize', key: '6' }
                 ];
                 if (running) options.push({ label: 'Detener bot', hint: 'Apagar el bot', value: 'stop', key: '7' });
                 options.push({ label: 'Salir', hint: 'Cerrar el panel', value: 'quit', key: '0' });
@@ -919,22 +924,268 @@ async function runPanel(): Promise<void> {
         }
     }
 
-    async function customizeScreen(): Promise<void> {
-        type Item = 'menu' | 'name' | 'prefix' | 'coin' | 'dev' | 'owners' | 'banner' | 'logs' | 'restart' | 'reset' | 'back';
+    const bannerProblem = (value: string): string | null => {
+        if (/^https?:\/\//i.test(value)) return null;
+        const abs = path.isAbsolute(value) ? value : path.join(ROOT, value);
+        return fs.existsSync(abs) && fs.statSync(abs).isFile() ? null : 'No existe ese archivo.';
+    };
+
+    // Símbolos decorativos de los menús que una terminal no sabe dibujar.
+    const EXOTIC = /[\u0591-\u05c7\u0600-\u06ff\u0980-\u0b7f\u1800-\u180f\u115f\u3164\u200e\uabc0-\uabff\ufe20-\ufe2f\u{11000}-\u{1107f}\u{13000}-\u{1342f}\u{1d000}-\u{1d24f}]/gu;
+
+    /** Convierte un texto con formato de WhatsApp en líneas para la terminal. */
+    function chatPreview(text: string): string[] {
+        const max = Math.max(16, Math.min(cols() - 5, 56));
+        const out: string[] = [];
+        const paint = (line: string): string => line
+            .replace(/\*`?([^*`]+)`?\*/g, (_m, inner: string) => c.bold(inner))
+            .replace(/(^|\s)_([^_]+)_(?=\s|$)/g, (_m, lead: string, inner: string) => lead + c.accent(inner))
+            .replace(/[*`]/g, '');
+
+        for (const raw of text.split('\n')) {
+            const clean = raw.replace(EXOTIC, '').replace(/[ \u00a0]{2,}/g, ' ').trim();
+            if (!clean) {
+                if (out.length && out[out.length - 1] !== '') out.push('');
+                continue;
+            }
+            // Se conserva la sangría de las líneas que empiezan con espacios normales.
+            const indent = /^ +(?=[^\s])/.exec(raw)?.[0].slice(0, 3) ?? '';
+            const quote = clean.startsWith('> ');
+            const lead = quote ? c.dim('▎ ') : indent;
+            const pieces = wrap(paint(quote ? clean.slice(2) : clean), max - (quote ? 2 : indent.length));
+            for (const piece of pieces) out.push(lead + (quote ? c.dim(piece) : piece));
+        }
+        while (out.length && out[out.length - 1] === '') out.pop();
+        return out.map(line => ' ' + c.dim('│ ') + line);
+    }
+
+    async function menuStyleScreen(): Promise<void> {
+        type Choice = MenuTheme | 'banners' | 'back';
+        let index = Math.max(0, MENU_THEMES.indexOf(loadSettings().menuTheme));
+
+        while (true) {
+            const s = loadSettings();
+            const bannerOf = (theme: MenuTheme): string => s.menuBanners[theme] || 'banner principal';
+            const options: { label: string; hint: string; value: Choice; key: string }[] = [
+                ...MENU_THEMES.map((theme, i) => ({
+                    label: MENU_THEME_NAMES[theme],
+                    hint: [s.menuTheme === theme ? '● en uso' : '', s.menuBanners[theme] ? 'banner propio' : ''].filter(Boolean).join(' · '),
+                    value: theme as Choice,
+                    key: String(i + 1)
+                })),
+                { label: 'Banner de cada estilo', hint: 'Imagen del menú', value: 'banners', key: 'b' },
+                { label: 'Volver', hint: '', value: 'back', key: '0' }
+            ];
+
+            const sample = (theme: MenuTheme): string[] => [
+                ' ' + c.dim('┌ Ejemplo · ') + c.accent(MENU_THEME_NAMES[theme]),
+                ...chatPreview(sampleMenu(theme, {
+                    botName: s.botName,
+                    devName: s.devName,
+                    coin: s.coin,
+                    prefix: s.prefix,
+                    user: 'Lyan',
+                    total: 140,
+                    link: 'github.com/…/DenjiBot'
+                }))
+            ];
+
+            const choice = await select<Choice>({
+                header: () => [
+                    ...title('Personalizar › Estilo del menú'),
+                    ...para('Mueve la selección para ver un ejemplo de cada estilo y pulsa Enter para usarlo.', c.dim)
+                ],
+                options,
+                initial: index,
+                back: 'back',
+                preview: value => (value === 'banners' || value === 'back' ? sample(s.menuTheme) : sample(value))
+            });
+            index = Math.max(0, options.findIndex(option => option.value === choice));
+
+            if (choice === 'back') return;
+
+            if (choice === 'banners') {
+                const theme = await select<MenuTheme | null>({
+                    header: () => [
+                        ...title('Personalizar › Banner de cada estilo'),
+                        ...para('Cada estilo puede tener su propia imagen. Si no tiene, usa el banner principal.', c.dim),
+                        ' ' + c.dim('Banner principal: ') + c.white(s.banner)
+                    ],
+                    options: [
+                        ...MENU_THEMES.map((item, i) => ({ label: MENU_THEME_NAMES[item], hint: bannerOf(item), value: item as MenuTheme | null, key: String(i + 1) })),
+                        { label: 'Volver', value: null, key: '0' }
+                    ],
+                    initial: Math.max(0, MENU_THEMES.indexOf(s.menuTheme)),
+                    back: null
+                });
+                if (!theme) continue;
+
+                const value = await prompt({
+                    header: () => [
+                        ...title(`Personalizar › Banner · ${MENU_THEME_NAMES[theme]}`),
+                        ' ' + c.dim('Actual: ') + c.white(bannerOf(theme))
+                    ],
+                    label: 'Imagen del menú para este estilo',
+                    hint: `Ruta dentro del bot (por ejemplo ${DEFAULT_BANNER}) o URL. Déjalo vacío para usar el banner principal.`,
+                    initial: s.menuBanners[theme],
+                    maxLength: 300,
+                    validate: v => (v ? bannerProblem(v) : null)
+                });
+                if (value !== null) saveSettings({ menuBanners: { ...s.menuBanners, [theme]: value } });
+                continue;
+            }
+
+            saveSettings({ menuTheme: choice });
+        }
+    }
+
+    // Emojis habituales para elegir sin tener que escribirlos.
+    const EMOJI_CHOICES = ['🕘', '⏳', '⌛', '🔄', '👀', '⭐️', '✅', '👍', '🔥', '❤️', '🪚', '❌', '⚠️', '🚫', '🔒', '❓'];
+
+    /** Devuelve el emoji elegido, '' para quitar la reacción o `null` si se cancela. */
+    async function pickEmoji(section: string, current: string, noneLabel = 'Sin reacción'): Promise<string | null> {
+        const choice = await select<string | null>({
+            header: () => [
+                ...title(`Personalizar › ${section}`),
+                ' ' + c.dim('Actual: ') + (current ? c.white(current) : c.dim('sin reacción'))
+            ],
+            options: [
+                { label: 'Escribir otro emoji', hint: 'Con el teclado', value: 'type', key: 'e' },
+                { label: noneLabel, value: '', key: 'x' },
+                ...EMOJI_CHOICES.map(emoji => ({ label: emoji, value: emoji as string | null })),
+                { label: 'Volver', value: null, key: '0' }
+            ],
+            // Con un emoji que no está en la lista, la selección empieza en "Escribir otro".
+            initial: !current ? 1 : EMOJI_CHOICES.includes(current) ? EMOJI_CHOICES.indexOf(current) + 2 : 0,
+            back: null
+        });
+        if (choice !== 'type') return choice;
+
+        const typed = await prompt({
+            header: () => title(`Personalizar › ${section}`),
+            label: 'Emoji de la reacción',
+            hint: 'Escribe o pega un solo emoji.',
+            maxLength: 16,
+            validate: value => (cleanEmoji(value) ? null : 'Tiene que ser un único emoji.')
+        });
+        return typed === null ? null : cleanEmoji(typed);
+    }
+
+    async function commandReactionsScreen(): Promise<void> {
+        while (true) {
+            const s = loadSettings();
+            const entries = Object.entries(s.reactions.commands);
+            const choice = await select<string>({
+                header: () => [
+                    ...title('Personalizar › Por comando'),
+                    ...para(`Un comando con emoji propio reacciona con él al terminar, en lugar del de "Listo" (${s.reactions.events.done || 'sin reacción'}). Elige uno de la lista para cambiarlo o quitarlo.`, c.dim),
+                    ...(entries.length ? [] : ['', ' ' + c.yellow('Todavía no hay ninguno.')])
+                ],
+                options: [
+                    ...entries.map(([name, emoji]) => ({ label: s.prefix + name, hint: emoji, value: 'edit:' + name })),
+                    { label: '+ Añadir comando', value: 'add', key: 'a' },
+                    { label: 'Volver', value: 'back', key: '0' }
+                ],
+                back: 'back'
+            });
+
+            if (choice === 'back') return;
+
+            let name = choice.startsWith('edit:') ? choice.slice(5) : '';
+            if (choice === 'add') {
+                if (entries.length >= MAX_COMMAND_REACTIONS) {
+                    await message(() => [...title('Personalizar › Por comando'), ...para(`Ya hay ${MAX_COMMAND_REACTIONS} comandos con emoji propio. Quita alguno para añadir otro.`, c.yellow)]);
+                    continue;
+                }
+                const typed = await prompt({
+                    header: () => title('Personalizar › Por comando'),
+                    label: 'Nombre del comando',
+                    hint: `Sin el prefijo. Sirve cualquiera de sus nombres, por ejemplo: sticker, s, play, menu`,
+                    maxLength: 32,
+                    validate: value => (cleanCommandName(value) ? null : 'Escribe solo el nombre del comando (letras y números).')
+                });
+                if (!typed) continue;
+                name = cleanCommandName(typed);
+            }
+
+            const emoji = await pickEmoji(`Reacción de ${s.prefix}${name}`, s.reactions.commands[name] || '', 'Quitar este comando');
+            if (emoji === null) continue;
+
+            const commands = { ...loadSettings().reactions.commands };
+            if (emoji) commands[name] = emoji;
+            else delete commands[name];
+            saveSettings({ reactions: { ...loadSettings().reactions, commands } });
+        }
+    }
+
+    async function reactionsScreen(): Promise<void> {
+        type Choice = ReactionEvent | 'toggle' | 'commands' | 'back';
         let index = 0;
 
         while (true) {
             const s = loadSettings();
+            const r = s.reactions;
+            const count = Object.keys(r.commands).length;
+            const options: { label: string; hint: string; value: Choice; key: string }[] = [
+                { label: 'Reacciones', hint: r.enabled ? 'activadas' : 'desactivadas', value: 'toggle', key: '1' },
+                ...REACTION_EVENTS.map((event, i) => ({
+                    label: REACTION_EVENT_NAMES[event],
+                    hint: r.events[event] || 'sin reacción',
+                    value: event as Choice,
+                    key: String(i + 2)
+                })),
+                { label: 'Por comando', hint: count ? `${count} con emoji propio` : 'ninguno', value: 'commands', key: 'c' },
+                { label: 'Volver', hint: '', value: 'back', key: '0' }
+            ];
+
+            const choice = await select<Choice>({
+                header: () => [
+                    ...title('Personalizar › Reacciones'),
+                    ...para('El bot reacciona con un emoji al mensaje de quien usa un comando.', c.dim)
+                ],
+                options,
+                initial: index,
+                back: 'back',
+                preview: value => {
+                    if (value === 'toggle') return para(r.enabled ? 'Enter para desactivar todas las reacciones.' : 'Enter para activarlas.', c.dim);
+                    if (value === 'commands') return para('Emoji propio para comandos concretos (sustituye al de "Listo").', c.dim);
+                    if (value === 'back') return [];
+                    return para(REACTION_EVENT_HINTS[value], c.dim);
+                }
+            });
+            index = Math.max(0, options.findIndex(option => option.value === choice));
+
+            if (choice === 'back') return;
+            if (choice === 'toggle') {
+                saveSettings({ reactions: { ...r, enabled: !r.enabled } });
+            } else if (choice === 'commands') {
+                await commandReactionsScreen();
+            } else {
+                const emoji = await pickEmoji(REACTION_EVENT_NAMES[choice], r.events[choice]);
+                if (emoji !== null) saveSettings({ reactions: { ...r, events: { ...r.events, [choice]: emoji } } });
+            }
+        }
+    }
+
+    async function customizeScreen(): Promise<void> {
+        type Item = 'style' | 'menu' | 'reactions' | 'name' | 'prefix' | 'coin' | 'dev' | 'owners' | 'banner' | 'logs' | 'restart' | 'reset' | 'back';
+        let index = 0;
+
+        while (true) {
+            const s = loadSettings();
+            const r = s.reactions;
             const items: { label: string; hint: string; value: Item; key: string }[] = [
-                { label: 'Estilo del menú', hint: s.menuStyle === 'lista' ? 'Lista interactiva' : 'Texto clásico', value: 'menu', key: '1' },
-                { label: 'Nombre del bot', hint: s.botName, value: 'name', key: '2' },
-                { label: 'Prefijo', hint: s.prefix, value: 'prefix', key: '3' },
-                { label: 'Moneda', hint: s.coin, value: 'coin', key: '4' },
-                { label: 'Desarrollador', hint: s.devName, value: 'dev', key: '5' },
-                { label: 'Dueños', hint: s.owners.length ? s.owners.map(phone).join(', ') : 'ninguno', value: 'owners', key: '6' },
-                { label: 'Banner', hint: s.banner, value: 'banner', key: '7' },
-                { label: 'Logs de mensajes', hint: s.logMode, value: 'logs', key: '8' },
-                { label: 'Reinicio automático', hint: s.autoRestart ? 'activado' : 'desactivado', value: 'restart', key: '9' },
+                { label: 'Estilo del menú', hint: MENU_THEME_NAMES[s.menuTheme], value: 'style', key: '1' },
+                { label: 'Formato del menú', hint: s.menuStyle === 'lista' ? 'Lista interactiva' : 'Texto clásico', value: 'menu', key: '2' },
+                { label: 'Reacciones', hint: r.enabled ? `${r.events.wait || '—'} espera ${r.events.done || '—'} listo` : 'desactivadas', value: 'reactions', key: '3' },
+                { label: 'Nombre del bot', hint: s.botName, value: 'name', key: '4' },
+                { label: 'Prefijo', hint: s.prefix, value: 'prefix', key: '5' },
+                { label: 'Moneda', hint: s.coin, value: 'coin', key: '6' },
+                { label: 'Desarrollador', hint: s.devName, value: 'dev', key: '7' },
+                { label: 'Dueños', hint: s.owners.length ? s.owners.map(phone).join(', ') : 'ninguno', value: 'owners', key: '8' },
+                { label: 'Banner principal', hint: s.banner, value: 'banner', key: '9' },
+                { label: 'Logs de mensajes', hint: s.logMode, value: 'logs', key: 'l' },
+                { label: 'Reinicio automático', hint: s.autoRestart ? 'activado' : 'desactivado', value: 'restart', key: 'a' },
                 { label: 'Restablecer todo', hint: 'Valores iniciales', value: 'reset', key: 'r' },
                 { label: 'Volver', hint: '', value: 'back', key: '0' }
             ];
@@ -952,10 +1203,14 @@ async function runPanel(): Promise<void> {
 
             if (choice === 'back') return;
 
-            if (choice === 'menu') {
+            if (choice === 'style') {
+                await menuStyleScreen();
+            } else if (choice === 'reactions') {
+                await reactionsScreen();
+            } else if (choice === 'menu') {
                 const style = await select<'lista' | 'texto' | null>({
                     header: () => [
-                        ...title('Personalizar › Estilo del menú'),
+                        ...title('Personalizar › Formato del menú'),
                         ...para(`Cómo responde el bot al comando ${s.prefix}menu:`)
                     ],
                     options: [
@@ -983,12 +1238,9 @@ async function runPanel(): Promise<void> {
             } else if (choice === 'owners') {
                 await ownersScreen();
             } else if (choice === 'banner') {
-                const value = await editText('Banner', 'Imagen del menú', `Ruta dentro del bot o URL. Por defecto: ${DEFAULT_BANNER}`, s.banner, 300,
-                    v => {
-                        if (/^https?:\/\//i.test(v)) return null;
-                        const abs = path.isAbsolute(v) ? v : path.join(ROOT, v);
-                        return fs.existsSync(abs) && fs.statSync(abs).isFile() ? null : 'No existe ese archivo.';
-                    });
+                const value = await editText('Banner principal', 'Imagen principal del bot',
+                    `Ruta dentro del bot o URL. Por defecto: ${DEFAULT_BANNER}. La usan el menú (si el estilo no tiene banner propio), el perfil y la información del bot.`,
+                    s.banner, 300, bannerProblem);
                 if (value) saveSettings({ banner: value });
             } else if (choice === 'logs') {
                 saveSettings({ logMode: LOG_MODES[(LOG_MODES.indexOf(s.logMode) + 1) % LOG_MODES.length] });
@@ -997,7 +1249,7 @@ async function runPanel(): Promise<void> {
             } else if (choice === 'reset') {
                 const ok = await confirm(
                     () => [...title('Personalizar › Restablecer'),
-                        ...para('Se restablecerán nombre, prefijo, moneda, menú, banner y logs.'),
+                        ...para('Se restablecerán nombre, prefijo, moneda, estilo y formato del menú, banners, reacciones y logs.'),
                         ...para('Los dueños y la sesión activa se conservan.', c.dim)],
                     '¿Restablecer los valores iniciales?'
                 );
