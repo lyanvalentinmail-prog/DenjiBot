@@ -21,6 +21,8 @@ export type MenuStyle = 'lista' | 'texto';
 /** Estilo (diseño) del menú. */
 export type MenuTheme = 'denji' | 'chainsaw' | 'simple';
 export type LogMode = 'detallado' | 'compacto' | 'apagado';
+/** Cómo responde el comando de la hora: vista HTML en el chat, imagen, las dos cosas o archivo. */
+export type ClockView = 'auto' | 'chat' | 'imagen' | 'archivo';
 
 /** Momentos en los que el bot reacciona al mensaje de quien usa un comando. */
 export type ReactionEvent = 'wait' | 'done' | 'error' | 'denied' | 'unknown';
@@ -45,6 +47,7 @@ export interface Settings {
     /** Banner propio de cada estilo de menú; vacío = banner principal. */
     menuBanners: Record<MenuTheme, string>;
     reactions: Reactions;
+    clockView: ClockView;
     logMode: LogMode;
     autoRestart: boolean;
     activeSession: string;
@@ -74,6 +77,20 @@ export const REACTION_EVENT_HINTS: Record<ReactionEvent, string> = {
     unknown: 'Cuando alguien escribe un comando que no existe.'
 };
 export const MAX_COMMAND_REACTIONS = 100;
+
+export const CLOCK_VIEWS: ClockView[] = ['auto', 'chat', 'imagen', 'archivo'];
+export const CLOCK_VIEW_NAMES: Record<ClockView, string> = {
+    auto: 'Reloj en vivo + imagen',
+    chat: 'Solo reloj en vivo',
+    imagen: 'Solo imagen',
+    archivo: 'Archivo .html'
+};
+export const CLOCK_VIEW_HINTS: Record<ClockView, string> = {
+    auto: 'Envía el reloj HTML dentro del chat y, debajo, una imagen del reloj. La imagen se ve en cualquier WhatsApp, así que siempre hay un reloj a la vista.',
+    chat: 'Envía solo el reloj HTML dentro del chat y un texto con la hora. Elígelo si en tu WhatsApp el reloj en vivo se ve bien y la imagen te sobra.',
+    imagen: 'Envía solo la imagen del reloj. Elígelo si en tu WhatsApp el reloj en vivo no aparece.',
+    archivo: 'Envía el reloj como archivo .html, que se abre con el navegador del teléfono.'
+};
 export const LOG_MODES: LogMode[] = ['detallado', 'compacto', 'apagado'];
 
 export const defaultSettings: Settings = {
@@ -91,6 +108,7 @@ export const defaultSettings: Settings = {
         events: { wait: '🕘', done: '⭐️', error: '', denied: '', unknown: '' },
         commands: {}
     },
+    clockView: 'auto',
     logMode: 'detallado',
     autoRestart: true,
     activeSession: 'principal'
@@ -185,6 +203,7 @@ export function normalizeSettings(raw: any): Settings {
         menuTheme: MENU_THEMES.includes(src.menuTheme) ? src.menuTheme : d.menuTheme,
         menuBanners: normalizeMenuBanners(src.menuBanners),
         reactions: normalizeReactions(src.reactions),
+        clockView: CLOCK_VIEWS.includes(src.clockView) ? src.clockView : d.clockView,
         logMode: LOG_MODES.includes(src.logMode) ? src.logMode : d.logMode,
         autoRestart: typeof src.autoRestart === 'boolean' ? src.autoRestart : d.autoRestart,
         activeSession: typeof src.activeSession === 'string' && isValidSessionName(src.activeSession)

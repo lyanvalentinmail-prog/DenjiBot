@@ -283,7 +283,7 @@ html,body{margin:0;padding:0;background:transparent}
 .dj .panel{background:#161a22;border:1px solid #232a36;border-radius:16px;padding:16px 12px 14px}
 .dj .place{font-size:20px;font-weight:700;line-height:1.2}
 .dj .zone{margin-top:3px;font-size:12px;color:#8d96a6}
-.dj svg{display:block;width:100%;max-width:210px;height:auto;margin:14px auto 12px}
+.dj svg{display:block;width:210px;height:210px;margin:14px auto 12px}
 .dj .face{fill:#0f1319;stroke:#2a3240;stroke-width:2}
 .dj .tk{stroke:#465063;stroke-width:1.5;stroke-linecap:round}
 .dj .tk.mj{stroke:#aab3c2;stroke-width:2.5}
@@ -305,6 +305,7 @@ html,body{margin:0;padding:0;background:transparent}
 .dj .pl{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:#c3cad6;text-align:left}
 .dj .tm{margin-left:6px;font-weight:700;font-variant-numeric:tabular-nums;font-feature-settings:"tnum"}
 @media (max-width:300px){.dj .time{font-size:38px}.dj .place{font-size:18px}.dj .w{font-size:11px;padding:6px 7px}}
+@media (max-width:270px){.dj svg{width:170px;height:170px}}
 @media (max-width:230px){.dj .ws{grid-template-columns:1fr}}
 </style>
 <div class="dj" id="dj">
@@ -312,7 +313,7 @@ html,body{margin:0;padding:0;background:transparent}
 <div class="panel">
 <div class="place">${escapeHtml(target.label)}</div>
 <div class="zone">${escapeHtml(target.zone)} · ${info.offset}</div>
-<svg viewBox="0 0 260 260" role="img" aria-label="Reloj">
+<svg viewBox="0 0 260 260" width="210" height="210" role="img" aria-label="Reloj">
 <circle cx="130" cy="130" r="124" class="face"/>
 ${ticks}
 ${numbers}
@@ -365,10 +366,44 @@ ${numbers}
     }
   }
 
+  // Dentro del chat de WhatsApp la burbuja no conoce la altura de la página:
+  // se le comunica para que no quede plegada ni cambie de tamaño sin parar.
+  var sizes = [];
+  function fit() {
+    if (!window.AndroidBridge || sizes.length >= 12) return;
+    var box = document.getElementById('dj');
+    var height = Math.ceil(Math.max(box ? box.getBoundingClientRect().height : 0, document.body ? document.body.scrollHeight : 0));
+    if (!height || sizes[sizes.length - 1] === height) return;
+    // Si la altura va y viene entre dos valores, se deja de insistir.
+    if (sizes.length > 1 && sizes[sizes.length - 2] === height) { sizes.length = 12; return; }
+    sizes.push(height);
+    try { window.AndroidBridge.updateSize(height); } catch (e) { sizes.length = 12; }
+  }
+
+  var timer = null;
+  function start() {
+    if (timer === null) { tick(); timer = setInterval(tick, 100); }
+  }
+  function stop() {
+    if (timer !== null) { clearInterval(timer); timer = null; }
+  }
+
   try {
     tick();
     document.getElementById('dj').className = 'dj on';
-    setInterval(tick, 100);
+    start();
+    // La burbuja sigue viva aunque el chat no esté a la vista: ahí el reloj se detiene.
+    document.addEventListener('visibilitychange', function () {
+      if (document.hidden) stop(); else start();
+    });
+  } catch (e) {}
+
+  try {
+    fit();
+    setTimeout(fit, 150);
+    setTimeout(fit, 600);
+    window.addEventListener('load', fit);
+    window.addEventListener('resize', function () { setTimeout(fit, 120); });
   } catch (e) {}
 })();
 </script>`;

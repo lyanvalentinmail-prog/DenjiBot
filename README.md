@@ -75,7 +75,7 @@ npm start
 | `3` | **Sesiones** | Lista las sesiones guardadas (número, tamaño, última actividad), permite crear otra y elegir cuál usa el bot. |
 | `4` | **Eliminar sesiones** | Borra una sesión o todas (pide confirmación). |
 | `5` | **Actualizar bot** | Ejecuta `git pull`, ofrece instalar dependencias si cambiaron y reiniciar el bot. |
-| `6` | **Personalizar bot** | Estilo y formato del menú, reacciones, nombre, prefijo, moneda, desarrollador, dueños, banners, logs y reinicio automático. |
+| `6` | **Personalizar bot** | Estilo y formato del menú, reacciones, reloj, nombre, prefijo, moneda, desarrollador, dueños, banners, logs y reinicio automático. |
 | `7` | **Detener bot** | Aparece cuando el bot está encendido. |
 | `0` | **Salir** | Cierra el panel (y apaga el bot). |
 
@@ -104,6 +104,7 @@ Los cambios se guardan en `settings.json` y el bot los aplica al instante, sin r
 - **Estilo del menú**: el diseño con el que se escribe el menú. Hay tres: **Denji style** (el original), **Chainsaw man style** y **Simple style**. Al mover la selección el panel muestra un ejemplo de cada uno y con Enter se activa. Cada estilo puede tener su propio banner (*Banner de cada estilo*); mientras no lo tenga usa el banner principal. Los dueños también pueden cambiarlo desde WhatsApp con `.setmenu denji`, `.setmenu chainsaw` o `.setmenu simple`.
 - **Formato del menú**: `lista` envía un mensaje interactivo con un botón que despliega las categorías; `texto` envía el menú completo en un mensaje. Con cualquier formato, `.menu todo` muestra todos los comandos y `.menu <categoría>` solo una categoría. Desde WhatsApp: `.setmenu lista` o `.setmenu texto`.
 - **Reacciones**: el bot reacciona con un emoji al mensaje de quien usa un comando. Por defecto 🕘 mientras prepara la respuesta (*Espera / cargando*) y ⭐️ al terminar (*Listo*). Puedes cambiar cada emoji, quitarlo o apagar todas las reacciones. También puedes añadir reacción a otros momentos, que vienen sin emoji: *Error*, *Sin permiso* y *Comando desconocido*; y en *Por comando* darle a un comando su propio emoji, que sustituye al de *Listo* (por ejemplo `sticker` → 🎨).
+- **Reloj (.hora)**: qué envía el comando de la hora: reloj en vivo e imagen, solo uno de los dos, o un archivo `.html`. Ver [Hora exacta](#hora-exacta-hora).
 - **Dueños**: números que pueden usar los comandos de dueño. Por defecto no hay ninguno: añade el tuyo aquí.
 - **Banner principal**: imagen del bot (menú, perfil e información). Por defecto `assets/banner.jpg`; admite una ruta dentro del bot o una URL.
 
@@ -119,11 +120,29 @@ Si tu WhatsApp no muestra el paquete, `.done stickers` envía los stickers uno p
 
 ### **`HORA EXACTA (.hora)`**
 
-`.hora` muestra un reloj en vivo **dentro del chat**: una vista HTML con reloj analógico y digital, la fecha y la hora de otras zonas, que WhatsApp dibuja en la propia burbuja del mensaje (no es una foto, un video ni un archivo). Debajo llega un mensaje con la hora, la fecha y la zona en texto.
+`.hora` responde con dos cosas:
+
+1. **El reloj en vivo dentro del chat**: una vista HTML con reloj analógico y digital, la fecha y la hora de otras zonas, que WhatsApp dibuja en la propia burbuja del mensaje.
+2. **Una imagen del reloj** con la hora, la fecha y la zona. Una imagen se ve en cualquier WhatsApp, así que siempre queda un reloj a la vista aunque tu teléfono no dibuje el reloj en vivo.
 
 Sin indicar lugar usa el país de tu número; también acepta `.hora españa`, `.hora tokio` o `.hora America/Bogota`.
 
-La vista HTML usa el mismo tipo de mensaje con el que WhatsApp muestra las respuestas de Meta AI. No es una función documentada: depende de la versión de WhatsApp de quien lo recibe y puede dejar de funcionar. Si en tu teléfono no se ve el reloj, `.hora archivo` (o `.hora archivo tokio`) lo envía como archivo `.html` para abrirlo con el navegador; el bot hace lo mismo por su cuenta cuando WhatsApp rechaza la vista.
+El reloj en vivo usa el mismo tipo de mensaje con el que WhatsApp muestra las respuestas de Meta AI. No es una función documentada y tiene límites que el bot no puede saltarse:
+
+- Solo lo dibuja la **aplicación del teléfono**. En WhatsApp Web y Escritorio aparece únicamente una línea de texto con la hora.
+- WhatsApp decide desde sus servidores, cuenta por cuenta, si muestra este tipo de mensajes cuando no vienen de Meta AI. En algunas cuentas la burbuja llega vacía o plegada y desde el bot no se puede saber ni cambiar.
+- Ayuda tener **WhatsApp actualizado** y **guardar el número del bot en tus contactos**: WhatsApp pliega estas vistas cuando vienen de un número desconocido.
+
+Puedes elegir qué envía `.hora` en `npm start` → **Personalizar bot** → **Reloj (.hora)**:
+
+| Opción | Qué envía |
+| --- | --- |
+| **Reloj en vivo + imagen** (por defecto) | La vista HTML y, debajo, la imagen. |
+| **Solo reloj en vivo** | La vista HTML y un texto con la hora. Para cuando en tu WhatsApp se ve bien y la imagen sobra. |
+| **Solo imagen** | Solo la imagen. Para cuando en tu WhatsApp el reloj en vivo no aparece. |
+| **Archivo .html** | El reloj como archivo, que se abre con el navegador del teléfono. |
+
+También puedes pedir una forma concreta en un mensaje: `.hora chat`, `.hora imagen` o `.hora archivo` (con lugar: `.hora imagen tokio`).
 
 ### **`OTROS COMANDOS`**
 

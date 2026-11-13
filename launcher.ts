@@ -35,12 +35,14 @@ async function runPanel(): Promise<void> {
     const {
         ROOT, loadSettings, saveSettings, resetSettings, cleanNumber, isValidSessionName,
         DEFAULT_BANNER, LOG_MODES, MENU_THEMES, MENU_THEME_NAMES, REACTION_EVENTS, REACTION_EVENT_NAMES,
-        REACTION_EVENT_HINTS, MAX_COMMAND_REACTIONS, cleanEmoji, cleanCommandName
+        REACTION_EVENT_HINTS, MAX_COMMAND_REACTIONS, CLOCK_VIEWS, CLOCK_VIEW_NAMES, CLOCK_VIEW_HINTS,
+        cleanEmoji, cleanCommandName
     } = await import('./lib/settings.ts');
     const { sampleMenu } = await import('./lib/menustyles.ts');
 
     type MenuTheme = (typeof MENU_THEMES)[number];
     type ReactionEvent = (typeof REACTION_EVENTS)[number];
+    type ClockView = (typeof CLOCK_VIEWS)[number];
     const { listSessions, readSession, deleteSession, migrateLegacySession } = await import('./lib/sessions.ts');
     const { collectStats } = await import('./lib/stats.ts');
 
@@ -1168,7 +1170,7 @@ async function runPanel(): Promise<void> {
     }
 
     async function customizeScreen(): Promise<void> {
-        type Item = 'style' | 'menu' | 'reactions' | 'name' | 'prefix' | 'coin' | 'dev' | 'owners' | 'banner' | 'logs' | 'restart' | 'reset' | 'back';
+        type Item = 'style' | 'menu' | 'reactions' | 'clock' | 'name' | 'prefix' | 'coin' | 'dev' | 'owners' | 'banner' | 'logs' | 'restart' | 'reset' | 'back';
         let index = 0;
 
         while (true) {
@@ -1184,6 +1186,7 @@ async function runPanel(): Promise<void> {
                 { label: 'Desarrollador', hint: s.devName, value: 'dev', key: '7' },
                 { label: 'Dueños', hint: s.owners.length ? s.owners.map(phone).join(', ') : 'ninguno', value: 'owners', key: '8' },
                 { label: 'Banner principal', hint: s.banner, value: 'banner', key: '9' },
+                { label: 'Reloj (.hora)', hint: CLOCK_VIEW_NAMES[s.clockView], value: 'clock', key: 'h' },
                 { label: 'Logs de mensajes', hint: s.logMode, value: 'logs', key: 'l' },
                 { label: 'Reinicio automático', hint: s.autoRestart ? 'activado' : 'desactivado', value: 'restart', key: 'a' },
                 { label: 'Restablecer todo', hint: 'Valores iniciales', value: 'reset', key: 'r' },
@@ -1222,6 +1225,23 @@ async function runPanel(): Promise<void> {
                     back: null
                 });
                 if (style) saveSettings({ menuStyle: style });
+            } else if (choice === 'clock') {
+                const view = await select<ClockView | null>({
+                    header: () => [
+                        ...title('Personalizar › Reloj'),
+                        ...para(`Qué envía el bot con el comando ${s.prefix}hora:`),
+                        '',
+                        ...para('El reloj en vivo solo lo dibuja la aplicación de WhatsApp del teléfono, y no en todas las cuentas. En WhatsApp Web y Escritorio no aparece.', c.dim)
+                    ],
+                    options: [
+                        ...CLOCK_VIEWS.map((value, i) => ({ label: CLOCK_VIEW_NAMES[value], value: value as ClockView | null, key: String(i + 1) })),
+                        { label: 'Volver', value: null, key: '0' }
+                    ],
+                    initial: Math.max(0, CLOCK_VIEWS.indexOf(s.clockView)),
+                    preview: value => (value ? para(CLOCK_VIEW_HINTS[value], c.dim) : []),
+                    back: null
+                });
+                if (view) saveSettings({ clockView: view });
             } else if (choice === 'name') {
                 const value = await editText('Nombre del bot', 'Nuevo nombre del bot', 'Aparece en el menú, stickers y mensajes.', s.botName, 40);
                 if (value) saveSettings({ botName: value });
@@ -1249,7 +1269,7 @@ async function runPanel(): Promise<void> {
             } else if (choice === 'reset') {
                 const ok = await confirm(
                     () => [...title('Personalizar › Restablecer'),
-                        ...para('Se restablecerán nombre, prefijo, moneda, estilo y formato del menú, banners, reacciones y logs.'),
+                        ...para('Se restablecerán nombre, prefijo, moneda, estilo y formato del menú, banners, reacciones, reloj y logs.'),
                         ...para('Los dueños y la sesión activa se conservan.', c.dim)],
                     '¿Restablecer los valores iniciales?'
                 );
