@@ -1,0 +1,302 @@
+<style>
+/*@CSS*/
+.stat{font-size:12px;opacity:.9}
+.stat b{font-size:15px;color:#ffd166}
+#bucket{width:100%;height:26px;line-height:26px;font-size:13px;text-align:center;white-space:nowrap;overflow:hidden;opacity:.95}
+</style>
+<div id="app">
+<div class="bar"><span class="title">🎣 Fish</span><span id="net"></span></div>
+<div class="bar"><span class="stat">Atrapados <b id="count">0</b></span><span class="stat">Valor <b id="value">0</b></span></div>
+<canvas id="c"></canvas>
+<div class="hint" id="hint">Toca un lugar del río para lanzar la caña.</div>
+<div id="bucket"></div>
+<div id="code"></div>
+</div>
+<script>
+/*@CFG*/
+/*@SHARED*/
+(function () {
+  var W = djWidth(), H = Math.round(W * 1.12);
+  var canvas = $('c'), ctx = canvas.getContext('2d'), ratio = Math.min(2, window.devicePixelRatio || 1);
+  canvas.width = W * ratio; canvas.height = H * ratio;
+  canvas.style.width = W + 'px'; canvas.style.height = H + 'px';
+  ctx.scale(ratio, ratio);
+
+  var TOP = Math.round(H * 0.13), BOTTOM = Math.round(H * 0.82);     // orillas
+  var ROD = { x: W * 0.5, y: BOTTOM + 6 }, TIP = { x: W * 0.56, y: BOTTOM - 26 };
+  var COLORS = ['#8a6a4a', '#b9c7d6', '#f2a65a', '#8d99ae', '#7fb069', '#ff8c69', '#5e60ce', '#ffd166', '#6c757d'];
+  var FISHES = CFG.fish;
+
+  var state = 'idle', t = 0, time = 0, gained = 0, valueWon = 0, bag = {};
+  var bob = { x: 0, y: 0 }, from = { x: 0, y: 0 }, fish = null, waitFor = 0, approach = 0, windowFor = 0;
+  var bubbles = [], rings = [], message = '', messageT = 0, card = null, spots = [];
+
+  function caught() { return DJ.base[0] + gained; }
+  var paintStatus = djStatusUi(function () { return [caught()]; }, function () { return gained > 0; });
+
+  function hud() {
+    $('count').textContent = caught();
+    $('value').textContent = valueWon.toLocaleString('en-US');
+    var parts = [];
+    for (var i = 0; i < FISHES.length; i++) if (bag[i]) parts.push(FISHES[i].emoji + '×' + bag[i]);
+    $('bucket').textContent = parts.length ? parts.join('  ') : 'Lo que pesques irá a tu inventario del RPG.';
+  }
+
+  function say(text, hint) { message = text; messageT = 1.6; if (hint) $('hint').textContent = hint; }
+
+  // El pez que viene es el siguiente de la partida: el bot calcula el mismo.
+  function nextFish() { var i = djPick(FISHES, CFG.seed, caught() + 1); return { i: i, info: FISHES[i] }; }
+
+  function moveSpots() {
+    spots = [];
+    for (var i = 0; i < 2; i++) spots.push({ x: W * (0.15 + Math.random() * 0.7), y: TOP + 24 + Math.random() * (BOTTOM - TOP - 60) });
+  }
+  moveSpots();
+  setInterval(function () { if (state === 'idle') moveSpots(); }, 9000);
+
+  function cast(x, y) {
+    from = { x: TIP.x, y: TIP.y };
+    bob = { x: Math.max(14, Math.min(W - 14, x)), y: Math.max(TOP + 14, Math.min(BOTTOM - 22, y)) };
+    state = 'cast'; t = 0;
+    // Donde se ven ondas hay peces cerca: pican antes.
+    var near = spots.some(function (s) { return Math.hypot(s.x - bob.x, s.y - bob.y) < 46; });
+    waitFor = near ? 0.5 + Math.random() * 0.8 : 1.5 + Math.random() * 2.6;
+    $('hint').textContent = 'Espera… cuando veas burbujas, el pez se acerca.';
+  }
+
+  function startApproach() {
+    var next = nextFish(), angle, x, y, tries = 0;
+    do {
+      angle = Math.random() * Math.PI * 2;
+      var dist = 90 + Math.random() * 50;
+      x = bob.x + Math.cos(angle) * dist; y = bob.y + Math.sin(angle) * dist * 0.8;
+    } while ((x < 8 || x > W - 8 || y < TOP + 8 || y > BOTTOM - 8) && ++tries < 40);
+    fish = { i: next.i, info: next.info, sx: x, sy: y, x: x, y: y };
+    approach = (1.9 + Math.random() * 0.9) / next.info.speed;
+    windowFor = 0.62 / Math.pow(next.info.speed, 0.75);
+    state = 'approach'; t = 0;
+    $('hint').textContent = 'Toca justo cuando el anillo se cierre sobre el flotador.';
+  }
+
+  function catchIt() {
+    var info = fish.info;
+    gained++; valueWon += info.sell; bag[fish.i] = (bag[fish.i] || 0) + 1;
+    card = { i: fish.i, info: info };
+    state = 'reel'; t = 0;
+    rings.push({ x: bob.x, y: bob.y, r: 6, life: 1 });
+    hud();
+    DJ.save([caught()]);
+    paintStatus();
+  }
+
+  function tap(p) {
+    var x = p.x * W, y = p.y * H;
+    if (state === 'idle') {
+      if (y < TOP || y > BOTTOM) { say('Toca dentro del agua'); return; }
+      cast(x, y);
+    } else if (state === 'wait') {
+      state = 'idle'; say('Recogiste la caña', 'Toca un lugar del río para lanzar la caña.');
+    } else if (state === 'approach') {
+      // Un pelín antes de tiempo también vale.
+      if (approach - t < 0.09) return catchIt();
+      state = 'flee'; t = 0; say('¡Muy pronto! El pez se asustó', 'Espera a que el anillo se cierre. Toca el río para volver a lanzar.');
+    } else if (state === 'bite') {
+      catchIt();
+    } else if (state === 'show' && t > 0.5) {
+      state = 'idle'; card = null; $('hint').textContent = 'Toca un lugar del río para lanzar la caña.';
+    }
+  }
+  djTap(canvas, tap);
+
+  function update(dt) {
+    time += dt; t += dt;
+    if (messageT > 0) messageT -= dt;
+
+    if (state === 'cast' && t >= 0.45) { state = 'wait'; t = 0; rings.push({ x: bob.x, y: bob.y, r: 4, life: 1 }); }
+    else if (state === 'wait' && t >= waitFor) startApproach();
+    else if (state === 'approach') {
+      var k = Math.min(1, t / approach), ease = k * k * (3 - 2 * k);
+      fish.x = fish.sx + (bob.x - fish.sx) * ease; fish.y = fish.sy + (bob.y - fish.sy) * ease;
+      if (Math.random() < dt * 14) bubbles.push({ x: fish.x + (Math.random() - 0.5) * 14, y: fish.y + (Math.random() - 0.5) * 8, r: 1.5 + Math.random() * 2.5, life: 1 });
+      if (k >= 1) { state = 'bite'; t = 0; rings.push({ x: bob.x, y: bob.y, r: 6, life: 1 }); }
+    }
+    else if (state === 'bite' && t >= windowFor) { state = 'flee'; t = 0; say('Se escapó…', 'Casi. Toca el río para volver a lanzar.'); }
+    else if (state === 'flee') {
+      fish.x += (fish.x - bob.x + 0.01) * dt * 4; fish.y += (fish.y - bob.y + 0.01) * dt * 4 + dt * 30;
+      if (t >= 0.6) { state = 'idle'; fish = null; }
+    }
+    else if (state === 'reel' && t >= 0.7) { state = 'show'; t = 0; fish = null; $('hint').textContent = card.info.name + ' — vale ' + card.info.sell.toLocaleString('en-US') + ' ' + CFG.coin + '. Toca para seguir.'; }
+    else if (state === 'show' && t >= 2.4) { state = 'idle'; card = null; $('hint').textContent = 'Toca un lugar del río para lanzar la caña.'; }
+
+    var i;
+    for (i = bubbles.length - 1; i >= 0; i--) { var b = bubbles[i]; b.life -= dt * 0.9; b.y -= dt * 9; b.r += dt * 2.2; if (b.life <= 0) bubbles.splice(i, 1); }
+    for (i = rings.length - 1; i >= 0; i--) { var r = rings[i]; r.life -= dt * 1.4; r.r += dt * 34; if (r.life <= 0) rings.splice(i, 1); }
+  }
+
+  function drawFish(x, y, i, scale, angle) {
+    var s = (9 + Math.min(8, i) * 1.5) * scale;
+    ctx.save(); ctx.translate(x, y); ctx.rotate(angle || 0);
+    if (i === 0) {                       // la bota
+      ctx.fillStyle = COLORS[0];
+      ctx.beginPath(); ctx.moveTo(-s * 0.5, -s); ctx.lineTo(s * 0.2, -s); ctx.lineTo(s * 0.2, 0); ctx.lineTo(s, s * 0.1);
+      ctx.lineTo(s, s * 0.6); ctx.lineTo(-s * 0.5, s * 0.6); ctx.closePath(); ctx.fill();
+      ctx.fillStyle = '#5b452f'; ctx.fillRect(-s * 0.5, s * 0.45, s * 1.5, s * 0.18);
+    } else {
+      ctx.fillStyle = COLORS[i % COLORS.length];
+      ctx.beginPath(); ctx.ellipse(0, 0, s, s * 0.48, 0, 0, 7); ctx.fill();
+      ctx.beginPath(); ctx.moveTo(-s * 0.8, 0); ctx.lineTo(-s * 1.55, -s * 0.5); ctx.lineTo(-s * 1.55, s * 0.5); ctx.closePath(); ctx.fill();
+      ctx.beginPath(); ctx.moveTo(-s * 0.2, -s * 0.4); ctx.lineTo(s * 0.2, -s * 0.85); ctx.lineTo(s * 0.4, -s * 0.38); ctx.closePath(); ctx.fill();
+      ctx.fillStyle = 'rgba(255,255,255,.28)'; ctx.beginPath(); ctx.ellipse(s * 0.1, s * 0.12, s * 0.6, s * 0.18, 0, 0, 7); ctx.fill();
+      ctx.fillStyle = '#fff'; ctx.beginPath(); ctx.arc(s * 0.55, -s * 0.1, s * 0.14, 0, 7); ctx.fill();
+      ctx.fillStyle = '#111'; ctx.beginPath(); ctx.arc(s * 0.58, -s * 0.1, s * 0.07, 0, 7); ctx.fill();
+    }
+    ctx.restore();
+  }
+
+  function scene() {
+    // Agua.
+    var g = ctx.createLinearGradient(0, TOP, 0, BOTTOM);
+    g.addColorStop(0, '#2a86c4'); g.addColorStop(1, '#0f4576');
+    ctx.fillStyle = g; ctx.fillRect(0, 0, W, H);
+
+    // Corriente: líneas claras que se desplazan.
+    ctx.strokeStyle = 'rgba(255,255,255,.13)'; ctx.lineWidth = 2; ctx.lineCap = 'round';
+    for (var i = 0; i < 16; i++) {
+      var y = TOP + 14 + i * ((BOTTOM - TOP - 20) / 16), x = ((i * 97 + time * (18 + (i % 4) * 7)) % (W + 80)) - 40, len = 22 + (i % 3) * 12;
+      ctx.beginPath(); ctx.moveTo(x, y + Math.sin(time * 1.5 + i) * 2); ctx.quadraticCurveTo(x + len / 2, y - 3, x + len, y + Math.sin(time * 1.5 + i + 1) * 2); ctx.stroke();
+    }
+
+    // Zonas con actividad (ondas).
+    ctx.lineWidth = 1.5;
+    spots.forEach(function (s, n) {
+      for (var k = 0; k < 2; k++) {
+        var phase = (time * 0.6 + k * 0.5 + n * 0.3) % 1;
+        ctx.strokeStyle = 'rgba(255,255,255,' + (0.35 * (1 - phase)) + ')';
+        ctx.beginPath(); ctx.ellipse(s.x, s.y, 5 + phase * 20, (5 + phase * 20) * 0.45, 0, 0, 7); ctx.stroke();
+      }
+    });
+
+    // Orilla lejana con juncos.
+    ctx.fillStyle = '#3f8f4f'; ctx.fillRect(0, 0, W, TOP - 6);
+    ctx.fillStyle = '#2f6f3e';
+    ctx.beginPath(); ctx.moveTo(0, TOP - 8);
+    for (var x2 = 0; x2 <= W; x2 += 14) ctx.lineTo(x2, TOP - 4 + Math.sin(x2 * 0.21) * 4);
+    ctx.lineTo(W, TOP - 4); ctx.lineTo(W, 0); ctx.lineTo(0, 0); ctx.closePath(); ctx.fill();
+    ctx.fillStyle = '#4faa5f';
+    for (var tr = 0; tr < 7; tr++) { ctx.beginPath(); ctx.arc(20 + tr * (W / 6.4), TOP * 0.38 + (tr % 2) * 5, 13 + (tr % 3) * 3, 0, 7); ctx.fill(); }
+    ctx.strokeStyle = '#2c5e36'; ctx.lineWidth = 2;
+    for (var j = 0; j < 12; j++) { var rx = 10 + j * (W / 11.5); ctx.beginPath(); ctx.moveTo(rx, TOP + 2); ctx.lineTo(rx + Math.sin(time * 1.2 + j) * 2.5, TOP - 12 - (j % 3) * 3); ctx.stroke(); }
+
+    // Piedras y nenúfares.
+    ctx.fillStyle = '#6f7c8a'; ctx.beginPath(); ctx.ellipse(W * 0.12, TOP + 30, 13, 8, 0, 0, 7); ctx.fill();
+    ctx.beginPath(); ctx.ellipse(W * 0.9, BOTTOM - 38, 11, 7, 0, 0, 7); ctx.fill();
+    ctx.fillStyle = '#58b368';
+    [[0.8, 0.22], [0.25, 0.7], [0.68, 0.6]].forEach(function (pad) {
+      var px = W * pad[0], py = TOP + (BOTTOM - TOP) * pad[1] + Math.sin(time + pad[0] * 9) * 1.5;
+      ctx.beginPath(); ctx.moveTo(px, py); ctx.arc(px, py, 9, 0.4, Math.PI * 2 - 0.2); ctx.closePath(); ctx.fill();
+    });
+
+    // Orilla cercana y pescador.
+    ctx.fillStyle = '#4b9a57'; ctx.fillRect(0, BOTTOM + 8, W, H - BOTTOM);
+    ctx.fillStyle = '#5fb56b';
+    ctx.beginPath(); ctx.moveTo(0, BOTTOM + 10);
+    for (var x3 = 0; x3 <= W; x3 += 12) ctx.lineTo(x3, BOTTOM + 4 + Math.sin(x3 * 0.19 + 1) * 4);
+    ctx.lineTo(W, BOTTOM + 4); ctx.lineTo(W, H); ctx.lineTo(0, H); ctx.closePath(); ctx.fill();
+
+    var px0 = ROD.x - 14, py0 = BOTTOM + 30;
+    ctx.fillStyle = '#35507a'; ctx.fillRect(px0 - 9, py0 - 4, 18, 22);                 // cuerpo
+    ctx.fillStyle = '#f1c9a5'; ctx.beginPath(); ctx.arc(px0, py0 - 12, 8, 0, 7); ctx.fill(); // cabeza
+    ctx.fillStyle = '#d9a441'; ctx.beginPath(); ctx.ellipse(px0, py0 - 17, 13, 4, 0, 0, 7); ctx.fill();
+    ctx.fillRect(px0 - 6, py0 - 24, 12, 8);                                            // sombrero
+    ctx.strokeStyle = '#7a5230'; ctx.lineWidth = 3;
+    ctx.beginPath(); ctx.moveTo(px0 + 8, py0 + 4); ctx.lineTo(TIP.x, TIP.y); ctx.stroke(); // caña
+  }
+
+  function draw() {
+    scene();
+    var i, b;
+
+    // Pez bajo el agua y sus burbujas.
+    if (fish && (state === 'approach' || state === 'bite' || state === 'flee')) {
+      ctx.globalAlpha = 0.34;
+      var ang = Math.atan2(bob.y - fish.y, bob.x - fish.x) + (state === 'flee' ? Math.PI : 0);
+      ctx.fillStyle = '#04243f';
+      ctx.save(); ctx.translate(fish.x, fish.y); ctx.rotate(ang);
+      var s = 10 + fish.i * 1.6;
+      ctx.beginPath(); ctx.ellipse(0, 0, s, s * 0.45, 0, 0, 7); ctx.fill();
+      ctx.beginPath(); ctx.moveTo(-s * 0.8, 0); ctx.lineTo(-s * 1.5, -s * 0.45); ctx.lineTo(-s * 1.5, s * 0.45); ctx.closePath(); ctx.fill();
+      ctx.restore(); ctx.globalAlpha = 1;
+    }
+    for (i = 0; i < bubbles.length; i++) {
+      b = bubbles[i];
+      ctx.strokeStyle = 'rgba(255,255,255,' + (0.85 * b.life) + ')'; ctx.fillStyle = 'rgba(255,255,255,' + (0.18 * b.life) + ')'; ctx.lineWidth = 1.2;
+      ctx.beginPath(); ctx.arc(b.x, b.y, b.r, 0, 7); ctx.fill(); ctx.stroke();
+    }
+    for (i = 0; i < rings.length; i++) {
+      b = rings[i]; ctx.strokeStyle = 'rgba(255,255,255,' + (0.7 * b.life) + ')'; ctx.lineWidth = 2;
+      ctx.beginPath(); ctx.ellipse(b.x, b.y, b.r, b.r * 0.5, 0, 0, 7); ctx.stroke();
+    }
+
+    // Sedal y flotador.
+    if (state !== 'idle' && state !== 'show') {
+      var bx = bob.x, by = bob.y;
+      if (state === 'cast') { var k = Math.min(1, t / 0.45); bx = from.x + (bob.x - from.x) * k; by = from.y + (bob.y - from.y) * k - Math.sin(k * Math.PI) * 46; }
+      else if (state === 'bite') by += 4 + Math.sin(time * 40) * 1.5;
+      else if (state === 'reel') { var q = Math.min(1, t / 0.7); bx = bob.x + (TIP.x - bob.x) * q; by = bob.y + (TIP.y - bob.y) * q - Math.sin(q * Math.PI) * 50; }
+      else by += Math.sin(time * 3) * 1.5;
+
+      ctx.strokeStyle = 'rgba(255,255,255,.75)'; ctx.lineWidth = 1;
+      ctx.beginPath(); ctx.moveTo(TIP.x, TIP.y); ctx.quadraticCurveTo((TIP.x + bx) / 2, Math.min(TIP.y, by) - 14, bx, by); ctx.stroke();
+
+      if (state === 'reel') drawFish(bx, by + 10, card.i, 1.2, Math.sin(time * 30) * 0.5 - 1.2);
+      ctx.fillStyle = '#fff'; ctx.beginPath(); ctx.arc(bx, by, 5, 0, 7); ctx.fill();
+      ctx.fillStyle = '#ff4d4d'; ctx.beginPath(); ctx.arc(bx, by, 5, Math.PI, 0); ctx.fill();
+
+      // Anillo que marca el momento: se cierra mientras el pez llega.
+      if (state === 'approach' || state === 'bite') {
+        var left = state === 'bite' ? 0 : 1 - t / approach, radius = 9 + left * 40;
+        ctx.strokeStyle = state === 'bite' ? '#7CFC8A' : 'rgba(255,255,255,.9)'; ctx.lineWidth = state === 'bite' ? 4 : 2.5;
+        ctx.beginPath(); ctx.arc(bob.x, bob.y, radius, 0, 7); ctx.stroke();
+        ctx.strokeStyle = 'rgba(124,252,138,.55)'; ctx.lineWidth = 1.5;
+        ctx.beginPath(); ctx.arc(bob.x, bob.y, 9, 0, 7); ctx.stroke();
+        if (state === 'bite') {
+          ctx.fillStyle = '#7CFC8A'; ctx.font = 'bold 26px system-ui,sans-serif'; ctx.textAlign = 'center';
+          ctx.fillText('¡YA!', bob.x, bob.y - 22);
+        }
+      }
+    }
+
+    // Tarjeta del pez atrapado.
+    if (state === 'show' && card) {
+      var pop = Math.min(1, t / 0.2), cw = W * 0.74, ch = 112, cx = (W - cw) / 2, cy = (TOP + BOTTOM) / 2 - ch / 2;
+      ctx.globalAlpha = pop;
+      ctx.fillStyle = 'rgba(12,20,36,.88)'; ctx.fillRect(cx, cy, cw, ch);
+      ctx.strokeStyle = '#ffd166'; ctx.lineWidth = 2; ctx.strokeRect(cx, cy, cw, ch);
+      drawFish(W / 2 + 4, cy + 36, card.i, 1.7, 0);
+      ctx.fillStyle = '#fff'; ctx.textAlign = 'center'; ctx.font = 'bold 18px system-ui,sans-serif';
+      ctx.fillText('¡' + card.info.name + '!', W / 2, cy + 80);
+      ctx.fillStyle = '#ffd166'; ctx.font = '14px system-ui,sans-serif';
+      ctx.fillText('+' + card.info.sell.toLocaleString('en-US') + ' ' + CFG.coin + ' al venderlo', W / 2, cy + 100);
+      ctx.globalAlpha = 1;
+    }
+
+    if (state === 'idle') {
+      ctx.fillStyle = 'rgba(255,255,255,' + (0.55 + Math.sin(time * 3) * 0.25) + ')'; ctx.textAlign = 'center'; ctx.font = 'bold 16px system-ui,sans-serif';
+      ctx.fillText('Toca el agua para lanzar', W / 2, (TOP + BOTTOM) / 2);
+    }
+    if (messageT > 0 && message) {
+      ctx.globalAlpha = Math.min(1, messageT * 2);
+      ctx.fillStyle = 'rgba(12,20,36,.8)'; ctx.fillRect(W * 0.1, TOP + 10, W * 0.8, 30);
+      ctx.fillStyle = '#fff'; ctx.textAlign = 'center'; ctx.font = 'bold 15px system-ui,sans-serif';
+      ctx.fillText(message, W / 2, TOP + 31);
+      ctx.globalAlpha = 1;
+    }
+  }
+
+  djLoop(function (dt) { update(dt); draw(); });
+  DJ.onState(hud);
+  hud();
+  djFit();
+  DJ.start();
+})();
+</script>

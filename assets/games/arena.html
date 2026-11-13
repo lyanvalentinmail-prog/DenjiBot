@@ -1,0 +1,284 @@
+<style>
+/*@CSS*/
+.stat{font-size:12px;opacity:.9}
+.stat b{font-size:15px;color:#ffd166}
+#board{width:100%;height:20px;line-height:20px;font-size:12px;text-align:center;white-space:nowrap;overflow:hidden}
+</style>
+<div id="app">
+<div class="bar"><span class="title">⭐ Arena</span><span id="net"></span></div>
+<div class="bar"><span class="stat">Estrellas <b id="stars">0</b></span><span class="stat" id="who"></span><span class="stat">Ganado <b id="won">0</b></span></div>
+<div id="board"></div>
+<canvas id="c"></canvas>
+<div class="hint" id="hint"></div>
+<div id="code"></div>
+</div>
+<script>
+/*@CFG*/
+/*@SHARED*/
+(function () {
+  var W = djWidth(), H = W;
+  var canvas = $('c'), ctx = canvas.getContext('2d'), ratio = Math.min(2, window.devicePixelRatio || 1);
+  canvas.width = W * ratio; canvas.height = H * ratio;
+  canvas.style.width = W + 'px'; canvas.style.height = H + 'px';
+  ctx.scale(ratio, ratio);
+
+  // El mundo mide 100 × 100; cada teléfono lo dibuja a su tamaño.
+  var U = W / 100, SPEED = 46, RADIUS = 4.2, REACH = 6.2, GOAL = 10;
+  var COLORS = ['#ff6b6b', '#4dabf7', '#51cf66', '#fcc419', '#cc5de8', '#ff922b', '#22b8cf', '#f06595'];
+  var WALLS = [[22, 22, 20, 5], [58, 22, 20, 5], [22, 73, 20, 5], [58, 73, 20, 5], [47.5, 38, 5, 24]];
+
+  var id = Math.random().toString(36).slice(2, 8);
+  var me = { id: id, name: CFG.name, x: 50, y: 88, tx: 50, ty: 88, color: djHash(id, 7) % COLORS.length, score: 0, seen: 0, mine: true };
+  var others = {}, bots = [], star = 0, starAt = null, target = null, keys = {};
+  var gained = 0, time = 0, sentAt = 0, claimAt = 0, claimed = -1, banner = '', bannerT = 0, pops = [];
+
+  function total() { return DJ.base[0] + gained; }
+  var paintStatus = djStatusUi(function () { return [total()]; }, function () { return gained > 0; });
+
+  function blocked(x, y, r) {
+    if (x < r || y < r || x > 100 - r || y > 100 - r) return true;
+    for (var i = 0; i < WALLS.length; i++) {
+      var w = WALLS[i];
+      if (x > w[0] - r && x < w[0] + w[2] + r && y > w[1] - r && y < w[1] + w[3] + r) return true;
+    }
+    return false;
+  }
+
+  // La estrella número k cae en el mismo sitio para toda la sala.
+  function placeStar() {
+    for (var n = 0; n < 30; n++) {
+      var x = 8 + djRand(CFG.room, star * 64 + n * 2) * 84, y = 8 + djRand(CFG.room, star * 64 + n * 2 + 1) * 84;
+      if (!blocked(x, y, 5)) { starAt = { x: x, y: y }; return; }
+    }
+    starAt = { x: 50, y: 12 };
+  }
+
+  function players() {
+    var list = [me], key;
+    for (key in others) list.push(others[key]);
+    return list.concat(bots);
+  }
+
+  function humans() { var n = 0; for (var key in others) n++; return n; }
+
+  function hud() {
+    $('stars').textContent = (CFG.best || 0) + total();
+    $('won').textContent = (gained * CFG.reward).toLocaleString('en-US');
+    var n = humans();
+    $('who').textContent = n ? (n + 1) + ' jugando' : (DJ.online() ? 'Sala vacía' : 'Sin conexión');
+    var list = players().sort(function (a, b) { return b.score - a.score; }).slice(0, 4);
+    $('board').textContent = list.map(function (p) { return (p.mine ? '▶ ' : '') + p.name + ' ' + p.score; }).join('   ·   ');
+    $('hint').textContent = n
+      ? 'Mantén el dedo en la pista para moverte. Quien llegue a ' + GOAL + ' estrellas gana la ronda.'
+      : (DJ.online()
+        ? 'Sala ' + (CFG.roomName || 'de este chat') + ': aún no hay nadie más; juegas contra bots. Que otros escriban ' + CFG.px + 'arena' + (CFG.roomName ? ' ' + CFG.roomName : '') + '.'
+        : 'Sin conexión: juegas contra bots. Cada estrella vale ' + CFG.reward + ' ' + CFG.coin + '.');
+  }
+
+  function setBots() {
+    var want = humans() ? 0 : 2;
+    if (bots.length === want) return;
+    bots = [];
+    for (var i = 0; i < want; i++) bots.push({ id: 'bot' + i, name: i ? 'Pochita' : 'Denji', x: 20 + i * 60, y: 12, color: (me.color + 2 + i * 3) % COLORS.length, score: 0, bot: true, wait: 0, side: 0 });
+    hud();
+  }
+
+  // Una estrella cogida: suma a quien llegó primero y aparece la siguiente.
+  function award(player, index) {
+    if (index !== star) return;
+    player.score++;
+    pops.push({ x: starAt.x, y: starAt.y, life: 1, color: COLORS[player.color] });
+    if (player.mine) {
+      gained++;
+      DJ.save([total()]);
+      paintStatus();
+    }
+    if (player.score >= GOAL) {
+      banner = (player.mine ? '¡Ganaste la ronda!' : player.name + ' gana la ronda'); bannerT = 2.6;
+      players().forEach(function (p) { p.score = 0; });
+    }
+    star = index + 1;
+    placeStar();
+    hud();
+  }
+
+  function publish(force) {
+    if (!DJ.online()) return;
+    var moved = Math.abs(me.x - me.sx) + Math.abs(me.y - me.sy) > 0.4;
+    if (!force && time - sentAt < (moved ? 0.11 : 1.5)) return;
+    sentAt = time; me.sx = me.x; me.sy = me.y;
+    DJ.send({ t: 'p', c: id, n: me.name, x: Math.round(me.x * 10) / 10, y: Math.round(me.y * 10) / 10, k: star, s: me.score, h: me.color });
+  }
+
+  DJ.room(CFG.room, function (msg) {
+    if (!msg || typeof msg.c !== 'string') return;
+    if (msg.t === 'g') {
+      // Todos reciben los avisos en el mismo orden: el primero se lleva la estrella.
+      var who = msg.c === id ? me : others[msg.c];
+      if (who && msg.k === star) award(who, msg.k);
+      return;
+    }
+    if (msg.c === id) return;
+    if (msg.t === 'hi') { publish(true); return; }
+    if (msg.t === 'bye') { delete others[msg.c]; setBots(); hud(); return; }
+    if (msg.t !== 'p') return;
+    var p = others[msg.c], fresh = !p;
+    if (fresh) {
+      if (humans() >= 11) return;
+      p = others[msg.c] = { id: msg.c, x: +msg.x || 50, y: +msg.y || 50 };
+    }
+    p.name = String(msg.n || 'Jugador').slice(0, 14);
+    p.tx = Math.max(0, Math.min(100, +msg.x || 0)); p.ty = Math.max(0, Math.min(100, +msg.y || 0));
+    p.color = (msg.h | 0) % COLORS.length; p.score = Math.max(0, Math.min(GOAL, msg.s | 0)); p.seen = time;
+    // Quien entra tarde se pone al día con la estrella que va la sala.
+    if ((msg.k | 0) > star) { star = msg.k | 0; placeStar(); }
+    if (fresh) { setBots(); hud(); publish(true); }
+  });
+
+  function step(p, dx, dy, dist) {
+    var len = Math.hypot(dx, dy);
+    if (len < 0.01) return false;
+    var mx = dx / len * Math.min(dist, len), my = dy / len * Math.min(dist, len);
+    // Se intenta el paso entero y, si hay pared, deslizar por un eje.
+    if (!blocked(p.x + mx, p.y + my, RADIUS)) { p.x += mx; p.y += my; return true; }
+    if (Math.abs(mx) > 0.01 && !blocked(p.x + mx, p.y, RADIUS)) { p.x += mx; return true; }
+    if (Math.abs(my) > 0.01 && !blocked(p.x, p.y + my, RADIUS)) { p.y += my; return true; }
+    return false;
+  }
+
+  function update(dt) {
+    time += dt;
+    var dx = (keys.ArrowRight || keys.d ? 1 : 0) - (keys.ArrowLeft || keys.a ? 1 : 0), dy = (keys.ArrowDown || keys.s ? 1 : 0) - (keys.ArrowUp || keys.w ? 1 : 0);
+    if (dx || dy) step(me, dx, dy, SPEED * dt);
+    else if (target) step(me, target.x - me.x, target.y - me.y, SPEED * dt);
+
+    var key, p;
+    for (key in others) {
+      p = others[key];
+      p.x += (p.tx - p.x) * Math.min(1, dt * 12); p.y += (p.ty - p.y) * Math.min(1, dt * 12);
+      if (time - p.seen > 6) { delete others[key]; setBots(); hud(); }
+    }
+
+    for (var i = 0; i < bots.length; i++) {
+      p = bots[i];
+      if (p.wait > 0) { p.wait -= dt; continue; }
+      // Los bots van más lentos y, si chocan, rodean la pared un momento.
+      var bx = starAt.x - p.x, by = starAt.y - p.y;
+      if (p.side > 0) { p.side -= dt; var turn = p.turn; step(p, -by * turn, bx * turn, SPEED * 0.52 * dt); }
+      else if (!step(p, bx, by, SPEED * 0.52 * dt)) { p.side = 0.5 + Math.random() * 0.5; p.turn = Math.random() < 0.5 ? 1 : -1; }
+      else if (Math.random() < dt * 0.25) p.wait = 0.3 + Math.random() * 0.7;
+      if (Math.hypot(bx, by) < REACH) { p.wait = 0.8; award(p, star); }
+    }
+
+    if (Math.hypot(starAt.x - me.x, starAt.y - me.y) < REACH && claimed !== star) {
+      // En línea decide el orden de llegada al servidor; sin conexión, es tuya.
+      if (humans() && DJ.send({ t: 'g', c: id, k: star })) { claimed = star; claimAt = time; }
+      else award(me, star);
+    }
+    // Si el aviso se perdió, se vuelve a intentar.
+    if (claimed === star && time - claimAt > 1.5) claimed = -1;
+
+    publish(false);
+    if (bannerT > 0) bannerT -= dt;
+    for (i = pops.length - 1; i >= 0; i--) { pops[i].life -= dt * 1.8; if (pops[i].life <= 0) pops.splice(i, 1); }
+  }
+
+  function starShape(x, y, r, rot) {
+    ctx.beginPath();
+    for (var i = 0; i < 10; i++) {
+      var a = rot + i * Math.PI / 5, rr = i % 2 ? r * 0.45 : r;
+      ctx.lineTo(x + Math.sin(a) * rr, y - Math.cos(a) * rr);
+    }
+    ctx.closePath();
+  }
+
+  function draw() {
+    ctx.fillStyle = '#18233d'; ctx.fillRect(0, 0, W, H);
+    ctx.strokeStyle = 'rgba(255,255,255,.045)'; ctx.lineWidth = 1;
+    for (var g = 10; g < 100; g += 10) { ctx.beginPath(); ctx.moveTo(g * U, 0); ctx.lineTo(g * U, H); ctx.moveTo(0, g * U); ctx.lineTo(W, g * U); ctx.stroke(); }
+    ctx.strokeStyle = 'rgba(255,255,255,.07)'; ctx.lineWidth = 2; ctx.beginPath(); ctx.arc(W / 2, H / 2, 30 * U, 0, 7); ctx.stroke();
+
+    var i, w;
+    for (i = 0; i < WALLS.length; i++) {
+      w = WALLS[i];
+      ctx.fillStyle = '#0c1324'; ctx.fillRect(w[0] * U, w[1] * U + 3, w[2] * U, w[3] * U);
+      ctx.fillStyle = '#5c6f9e'; ctx.fillRect(w[0] * U, w[1] * U, w[2] * U, w[3] * U);
+      ctx.fillStyle = '#7d91c2'; ctx.fillRect(w[0] * U, w[1] * U, w[2] * U, 3);
+    }
+
+    // Estrella.
+    var sx = starAt.x * U, sy = starAt.y * U + Math.sin(time * 4) * 2;
+    ctx.fillStyle = 'rgba(255,209,102,.18)'; ctx.beginPath(); ctx.arc(sx, sy, (7 + Math.sin(time * 5) * 1.2) * U, 0, 7); ctx.fill();
+    ctx.fillStyle = '#ffd166'; ctx.strokeStyle = '#b8860b'; ctx.lineWidth = 1.5;
+    starShape(sx, sy, 4.4 * U, time * 1.2); ctx.fill(); ctx.stroke();
+
+    for (i = 0; i < pops.length; i++) {
+      var pop = pops[i];
+      ctx.strokeStyle = pop.color; ctx.globalAlpha = pop.life; ctx.lineWidth = 3;
+      ctx.beginPath(); ctx.arc(pop.x * U, pop.y * U, (4 + (1 - pop.life) * 12) * U, 0, 7); ctx.stroke();
+      ctx.globalAlpha = 1;
+    }
+
+    // Rumbo del dedo.
+    if (target && Math.hypot(target.x - me.x, target.y - me.y) > 2) {
+      ctx.strokeStyle = 'rgba(255,255,255,.3)'; ctx.lineWidth = 2;
+      ctx.beginPath(); ctx.arc(target.x * U, target.y * U, 2.2 * U, 0, 7); ctx.stroke();
+    }
+
+    var list = players();
+    ctx.textAlign = 'center';
+    for (i = list.length - 1; i >= 0; i--) {
+      var p = list[i], x = p.x * U, y = p.y * U, r = RADIUS * U;
+      ctx.fillStyle = 'rgba(0,0,0,.3)'; ctx.beginPath(); ctx.ellipse(x, y + r * 0.9, r * 0.9, r * 0.35, 0, 0, 7); ctx.fill();
+      ctx.fillStyle = COLORS[p.color]; ctx.beginPath(); ctx.arc(x, y, r, 0, 7); ctx.fill();
+      ctx.lineWidth = p.mine ? 3 : 1.5; ctx.strokeStyle = p.mine ? '#fff' : 'rgba(0,0,0,.45)'; ctx.stroke();
+      ctx.fillStyle = '#fff'; ctx.beginPath(); ctx.arc(x - r * 0.35, y - r * 0.15, r * 0.24, 0, 7); ctx.arc(x + r * 0.35, y - r * 0.15, r * 0.24, 0, 7); ctx.fill();
+      ctx.fillStyle = '#111'; ctx.beginPath(); ctx.arc(x - r * 0.35, y - r * 0.12, r * 0.11, 0, 7); ctx.arc(x + r * 0.35, y - r * 0.12, r * 0.11, 0, 7); ctx.fill();
+      ctx.font = (p.mine ? 'bold ' : '') + '11px system-ui,sans-serif';
+      ctx.fillStyle = p.bot ? 'rgba(255,255,255,.6)' : '#fff';
+      ctx.fillText(p.mine ? 'Tú' : p.name, x, y - r - 5);
+    }
+
+    if (bannerT > 0) {
+      ctx.globalAlpha = Math.min(1, bannerT * 2);
+      ctx.fillStyle = 'rgba(8,12,24,.85)'; ctx.fillRect(W * 0.08, H * 0.42, W * 0.84, 46);
+      ctx.fillStyle = '#ffd166'; ctx.font = 'bold 19px system-ui,sans-serif';
+      ctx.fillText(banner, W / 2, H * 0.42 + 30);
+      ctx.globalAlpha = 1;
+    }
+  }
+
+  // Controles: mantener el dedo (o el ratón) marca hacia dónde ir.
+  function point(e) {
+    var r = canvas.getBoundingClientRect(), t = e.touches ? e.touches[0] : e;
+    if (!t) return null;
+    return { x: (t.clientX - r.left) / r.width * 100, y: (t.clientY - r.top) / r.height * 100 };
+  }
+  var down = false;
+  canvas.addEventListener('touchstart', function (e) { e.preventDefault(); target = point(e); }, { passive: false });
+  canvas.addEventListener('touchmove', function (e) { e.preventDefault(); target = point(e) || target; }, { passive: false });
+  canvas.addEventListener('touchend', function (e) { e.preventDefault(); target = null; }, { passive: false });
+  canvas.addEventListener('mousedown', function (e) { down = true; target = point(e); });
+  canvas.addEventListener('mousemove', function (e) { if (down) target = point(e); });
+  document.addEventListener('mouseup', function () { down = false; target = null; });
+  document.addEventListener('keydown', function (e) { keys[e.key] = true; if (e.key.indexOf('Arrow') === 0) e.preventDefault(); });
+  document.addEventListener('keyup', function (e) { keys[e.key] = false; });
+
+  var wasOnline = false;
+  setInterval(function () {
+    // Al conectar se pregunta quién hay en la sala.
+    var now = DJ.online();
+    if (now && !wasOnline) { DJ.send({ t: 'hi', c: id }); publish(true); }
+    if (now !== wasOnline) { wasOnline = now; hud(); }
+  }, 500);
+  window.addEventListener('pagehide', function () { DJ.send({ t: 'bye', c: id }); });
+
+  placeStar();
+  setBots();
+  DJ.onState(hud);
+  djLoop(function (dt) { update(dt); draw(); });
+  hud();
+  djFit();
+  DJ.start();
+})();
+</script>

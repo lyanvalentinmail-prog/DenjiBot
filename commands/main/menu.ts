@@ -3,7 +3,7 @@ import { sendList } from '#interactive';
 import { listTexts, renderMenu } from '../../lib/menustyles.ts';
 import type { MenuCategory, MenuData } from '../../lib/menustyles.ts';
 
-const ord = ['main', 'info', 'download', 'profile', 'admin', 'stickers', 'tools', 'utils', 'fun', 'game', 'economy', 'gacha', 'anime', 'nsfw', 'otros', 'logo'];
+const ord = ['main', 'info', 'download', 'profile', 'admin', 'stickers', 'tools', 'utils', 'fun', 'game', 'games', 'economy', 'rpg', 'gacha', 'anime', 'nsfw', 'otros', 'logo'];
 const idx = new Map(ord.map((c, i) => [c, i]));
 
 const emojis: { [k: string]: string } = {
@@ -17,6 +17,8 @@ const emojis: { [k: string]: string } = {
     'utils': '🍚',
     'fun': '🪼',
     'game': '🎮',
+    'games': '🕹️',
+    'rpg': '⚔️',
     'economy': '🪷',
     'gacha': '🎴',
     'anime': '🧈',
