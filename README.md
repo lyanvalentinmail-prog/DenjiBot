@@ -20,9 +20,9 @@
 
 **ADMIN** — Herramientas de administración de grupos: abrir/cerrar, enlaces, kick, promote, tagall, mute, antilink y modo solo admins.
 
-**STICKERS** — Creación, personalización y búsqueda de stickers (incluye estilo BRAT y Sticker.ly).
+**STICKERS** — Creación, personalización y búsqueda de stickers (incluye estilo BRAT y Sticker.ly), y packs de stickers completos a partir de tus fotos.
 
-**TOOLS** — Utilidades varias: IA conversacional, lectura de mensajes "ver una vez" y conversión de sticker a imagen.
+**TOOLS** — Utilidades varias: IA conversacional, lectura de mensajes "ver una vez", conversión de sticker a imagen y hora exacta con reloj.
 
 **ECONOMY** — Sistema económico completo: balance, ranking, apuestas, crímenes, depósitos, retiros, trabajo, diario y robos.
 
@@ -104,6 +104,18 @@ Los cambios se guardan en `settings.json` y el bot los aplica al instante, sin r
 - **Estilo del menú**: `lista` envía un mensaje interactivo con un botón que despliega las categorías; `texto` envía el menú clásico completo. Con cualquier estilo, `.menu todo` muestra todos los comandos y `.menu <categoría>` solo una categoría. Los dueños también pueden cambiarlo desde WhatsApp con `.setmenu lista` o `.setmenu texto`.
 - **Dueños**: números que pueden usar los comandos de dueño. Por defecto no hay ninguno: añade el tuyo aquí.
 - **Banner**: imagen del menú. Por defecto `assets/banner.jpg`; admite una ruta dentro del bot o una URL.
+
+### **`PACKS DE STICKERS (.spack)`**
+
+1. Envía tus fotos con el mensaje `.spack` (puedes mandar varias a la vez). Opcional: `.spack Nombre | Autor`.
+2. El bot las carga y te avisa cuántas lleva. Mientras el pack esté abierto, cada foto que envíes se agrega (hasta 60). Para agregar un sticker que ya existe, respóndele con `.spack`.
+3. `.done` cierra el pack y lo envía como paquete de stickers para añadirlo a WhatsApp. `.cancel` lo descarta.
+
+Si tu WhatsApp no muestra el paquete, `.done stickers` envía los stickers uno por uno. El pack se cancela solo tras 15 minutos sin actividad.
+
+### **`HORA EXACTA (.hora)`**
+
+`.hora` responde con la hora, la fecha y la zona horaria, y adjunta un archivo HTML con un reloj que puedes abrir desde WhatsApp. Sin indicar lugar usa el país de tu número; también acepta `.hora españa`, `.hora tokio` o `.hora America/Bogota`. Abierto con el navegador (por ejemplo Chrome) el reloj funciona en vivo; en visores sin JavaScript muestra la hora del momento en que lo pediste.
 
 ### **`OTROS COMANDOS`**
 
