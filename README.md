@@ -26,6 +26,10 @@
 
 **ECONOMY** — Sistema económico completo: balance, ranking, apuestas, crímenes, depósitos, retiros, trabajo, diario y robos.
 
+**GAMES** — Juegos que se abren dentro del chat: Snake, pesca, ajedrez y una arena multijugador, con el progreso guardado.
+
+**RPG** — Personaje con nivel, inventario y equipo: trabajos, minería, caza, mazmorras, jefes, duelos, forja, cocina y misiones diarias.
+
 **ANIME** — Más de 40 comandos de reacciones anime: besos, abrazos, caricias, bailes, emociones y acciones interactivas.
 
 **LOGO** — Generador de logos con múltiples estilos: alas, neón, glitch, gaming, anime, PUBG, Matrix y más.
@@ -143,6 +147,35 @@ Puedes elegir qué envía `.hora` en `npm start` → **Personalizar bot** → **
 | **Archivo .html** | El reloj como archivo, que se abre con el navegador del teléfono. |
 
 También puedes pedir una forma concreta en un mensaje: `.hora chat`, `.hora imagen` o `.hora archivo` (con lugar: `.hora imagen tokio`).
+
+### **`JUEGOS DENTRO DEL CHAT (.juegos)`**
+
+Los juegos se envían igual que el reloj de `.hora`: una vista HTML que WhatsApp dibuja en la burbuja del mensaje y se juega ahí mismo.
+
+| Comando | Juego |
+| --- | --- |
+| `.snake` | Snake. Cada manzana da monedas y tu récord queda guardado. |
+| `.fish` | Pesca en un río: lanzas la caña y tocas cuando el pez pica. **Lo que atrapas va a tu inventario del RPG** (`.inventario`, `.vender`, `.cocinar`). |
+| `.ajedrez` | Ajedrez contra el bot (fácil, medio, difícil), de a dos en el mismo teléfono, o en línea. La partida se guarda: al volver a pedirlo sigues donde ibas (`.ajedrez nueva` empieza de cero). |
+| `.arena` | Multijugador en vivo: todos los que piden `.arena` en el mismo chat entran a la misma sala y corren por las estrellas. Con `.arena CÓDIGO` juegan juntas personas de chats distintos. Si no hay nadie, juegas contra bots. |
+| `.juegos` | La lista y tus récords. |
+
+**Cómo se guarda el progreso.** WhatsApp no deja que estas vistas guarden nada en el teléfono, así que el juego le envía tu progreso al bot por internet mientras juegas. Arriba a la derecha del juego verás 🟢 *Guardado* cuando el bot lo recibió. Si no hay conexión, el juego muestra un código y `.canjear código` guarda lo mismo a mano. Lo que se gana con un mensaje de juego es siempre para quien lo pidió, lo abra quien lo abra.
+
+Para esa conexión el bot y los juegos usan servidores de mensajes públicos y gratuitos (MQTT). Vienen tres configurados y no hay que tocar nada; si quieres usar otros, cambia la lista `gameServers` en `settings.json` (direcciones `wss://`). Las partidas duran 48 horas.
+
+Valen los mismos límites que en el [reloj en vivo](#hora-exacta-hora): solo lo dibuja la app del teléfono y no en todas las cuentas. Si en tu WhatsApp no aparece, añade `archivo` (`.snake archivo`) y el bot manda el juego como archivo `.html` para abrirlo con el navegador; ahí también se guarda.
+
+### **`RPG (.rpg)`**
+
+Cada persona tiene un personaje por chat, con nivel, vida, inventario y equipo. `.rpg` muestra el tuyo y `.menu rpg` la lista completa de comandos. Algunos:
+
+- **Ganar**: `.trabajar`, `.oficio`, `.crimen`, `.minar`, `.talar`, `.cazar`, `.lanzar`, `.aventura`, `.cofre`, `.misiones`.
+- **Combate**: `.mazmorra` (un piso por comando; `.mazmorra salir` asegura el botín), `.jefe` (jefe del chat, entre todos), `.duelo @persona`.
+- **Objetos**: `.inventario`, `.tienda`, `.comprar`, `.vender`, `.equipar`, `.usar`, `.forjar`, `.cocinar`, `.mejorar`, `.regalar`.
+- **Estado**: `.curar`, `.descansar`, `.entrenar`, `.tiempos`, `.rtop`.
+
+Usa las mismas monedas que los comandos de economía.
 
 ### **`OTROS COMANDOS`**
 

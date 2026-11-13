@@ -28,7 +28,7 @@ export default rpgCommand({
             `🤺 *Duelos ganados* » ${fmt(p.wins)}`
         ];
         if (p.run) lines.push('', `> Tienes una mazmorra en curso (piso ${p.run.floor}). Sigue con *${px}mazmorra*.`);
-        else lines.push('', `> Mira todos los comandos con *${px}menu*`);
+        else lines.push('', `> Mira todos los comandos con *${px}menu rpg*`);
 
         return reply(lines.join('\n'), who === jid ? undefined : [who]);
     }

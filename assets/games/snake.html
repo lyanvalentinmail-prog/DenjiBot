@@ -86,7 +86,7 @@
       score++; apples++;
       if (score > bestLocal) bestLocal = score;
       placeFood(); hud();
-      if (apples % 5 === 0) save();
+      save();
     } else {
       snake.pop();
     }

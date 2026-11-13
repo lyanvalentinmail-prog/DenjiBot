@@ -4,7 +4,7 @@
 var DJ = (function () {
   var cfg = CFG, net = cfg.net, seq = cfg.q || 0;
   var clients = [], active = null, chosen = false;
-  var latest = null, sentText = '', ackText = '', waiting = false, resendTimer = null;
+  var latest = null, sentText = '', ackText = '', waiting = false, resendTimer = null, unsavedSince = 0;
   var statusCb = null, stateCb = null, roomCb = null, roomTopic = '';
   var status = net && net.urls.length ? 'wait' : 'off';
   var base = (cfg.v || []).slice(), synced = false;
@@ -20,11 +20,13 @@ var DJ = (function () {
   function flush() {
     if (!active || !active.isOpen() || !latest) return;
     var text = textOf(latest);
-    if (text === ackText) { setStatus('ok'); return; }
+    if (text === ackText) { unsavedSince = 0; setStatus('ok'); return; }
     seq++;
     sentText = text;
     waiting = true;
-    setStatus('saving');
+    if (!unsavedSince) unsavedSince = Date.now();
+    // Si el bot tarda en contestar se avisa (y la página enseña el código manual).
+    setStatus(Date.now() - unsavedSince > 9000 ? 'late' : 'saving');
     active.pub(net.pre + '/up', JSON.stringify({
       s: cfg.id, q: seq, t: 'sv', v: latest.v, x: latest.x || '',
       m: djMac(cfg.k, djPayload(cfg.id, seq, latest.v, latest.x || ''))
@@ -50,11 +52,11 @@ var DJ = (function () {
         for (var i = 0; i < base.length; i++) base[i] = Math.max(base[i], Number(msg.v[i]) || 0);
       }
       if (stateCb) stateCb(msg);
-      flush();
+      if (latest) flush(); else setStatus('ok');
     } else if (msg.t === 'ok') {
       if (waiting && msg.q >= seq) { waiting = false; ackText = sentText; }
       if (stateCb) stateCb(msg);
-      if (latest && textOf(latest) !== ackText) flush(); else setStatus('ok');
+      if (latest && textOf(latest) !== ackText) flush(); else { unsavedSince = 0; setStatus('ok'); }
     }
   }
 
@@ -69,7 +71,8 @@ var DJ = (function () {
   function ready() {
     active.sub(net.pre + '/s/' + cfg.id);
     if (roomTopic) active.sub(roomTopic);
-    setStatus(latest && textOf(latest) !== ackText ? 'saving' : 'ok');
+    // El verde solo sale cuando el bot ha contestado al menos una vez.
+    setStatus(latest && textOf(latest) !== ackText ? 'saving' : (synced ? 'ok' : 'wait'));
     // La suscripción tarda un instante en quedar lista.
     setTimeout(function () { hello(); flush(); }, 350);
   }
@@ -92,6 +95,7 @@ var DJ = (function () {
     });
     resendTimer = setInterval(function () {
       if (latest && textOf(latest) !== ackText) flush();
+      else if (!synced) hello();
     }, 4000);
   }
 
@@ -134,7 +138,7 @@ var $ = function (id) { return document.getElementById(id); };
  */
 function djStatusUi(getValues, hasProgress) {
   var chip = $('net'), codeBox = $('code');
-  var names = { ok: '🟢 Guardado', saving: '🟡 Guardando…', wait: '🟠 Conectando…', off: '⚪ Sin conexión' };
+  var names = { ok: '🟢 Guardado', saving: '🟡 Guardando…', late: '🟠 El bot no responde', wait: '🟠 Conectando…', off: '⚪ Sin conexión' };
   function paint() {
     var s = DJ.status();
     if (chip) chip.textContent = names[s] || '';

@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import config from '#config';
+import { UserJid } from '#simple';
 import { kvGet, kvSet, kvList, kvPrune, saveDB } from '#db';
 import { chatUser, addItem, addXp, track, FISH, ITEMS, coinName } from './rpg.ts';
 import { sendHtml, MAX_HTML_BYTES } from './richhtml.ts';
@@ -55,7 +56,7 @@ export const GAMES: Record<GameId, GameInfo> = {
     snake: { id: 'snake', name: 'Snake', emoji: '🐍', command: 'snake', values: 3, about: 'come manzanas sin chocar; cada manzana da monedas' },
     fish: { id: 'fish', name: 'Fish', emoji: '🎣', command: 'fish', values: 1, about: 'lanza la caña al río y tira en el momento justo; los peces van a tu inventario' },
     chess: { id: 'chess', name: 'Ajedrez', emoji: '♟️', command: 'ajedrez', values: 3, about: 'contra el bot (3 niveles), de a dos o en línea; la partida se guarda' },
-    arena: { id: 'arena', name: 'Arena', emoji: '⭐', command: 'arena', values: 1, about: 'multijugador: muévete con el control y gana estrellas contra otra gente' }
+    arena: { id: 'arena', name: 'Arena', emoji: '⭐', command: 'arena', values: 1, about: 'multijugador en vivo: llega a la estrella antes que los demás' }
 };
 
 export type Session = {
@@ -78,6 +79,8 @@ export type Session = {
     x: string;
     seed: number;
     room: string;
+    /** Snake: se batió el récord y aún no se avisó al chat. */
+    r?: boolean;
 };
 
 const SESSION_TTL_MS = 48 * 3600_000;
@@ -182,9 +185,14 @@ export function credit(session: Session, values: number[], extra: string): Credi
             session.v[0] = best;
             if (best > records.snake.best) {
                 records.snake.best = best;
-                out.notes.push(`🐍 *${session.n}* tiene nuevo récord en Snake: *${best}* puntos.`);
+                session.r = true;
             }
             out.changed = true;
+        }
+        // El aviso del récord va al terminar la partida, no a cada manzana.
+        if (session.r && plays) {
+            session.r = false;
+            if (records.snake.best >= 5) out.notes.push(`🐍 *${session.n}* tiene nuevo récord en Snake: *${records.snake.best}* puntos.`);
         }
         out.changed ||= apples > 0 || plays > 0;
     } else if (session.g === 'fish') {
@@ -437,7 +445,10 @@ export type NewGame = {
 /** Crea la partida y devuelve su página. */
 export async function createGame(input: NewGame): Promise<{ session: Session; html: string; online: boolean }> {
     startGameNet();
-    const urls = await waitForServers(3500);
+    const open = await waitForServers(3500);
+    // Aunque el bot aún no haya conectado, la página lleva los servidores: en
+    // cuanto el bot conecte, empieza a guardar.
+    const urls = open.length ? open : serverList();
     const records = recordsOf(input.jid);
     const info = GAMES[input.game];
 
@@ -492,7 +503,7 @@ export async function createGame(input: NewGame): Promise<{ session: Session; ht
     }
 
     putSession(session);
-    return { session, html: buildPage(input.game, cfg), online: urls.length > 0 };
+    return { session, html: buildPage(input.game, cfg), online: open.length > 0 };
 }
 
 const arg = (ctx: any, index: number): string => String(ctx.args?.[index] || '').toLowerCase();
@@ -516,7 +527,7 @@ export async function sendGame(ctx: any, game: GameId, options: { room?: string;
 
     const saving = online
         ? '✿ *Guardado* » automático mientras juegas (🟢 arriba a la derecha).'
-        : `✿ *Guardado* » ahora mismo no hay conexión con el servidor de juegos: al terminar, el juego te muestra un código para *${px}canjear*.`;
+        : `✿ *Guardado* » ahora mismo el bot no tiene conexión con el servidor de juegos. Si arriba a la derecha no sale 🟢, el juego te muestra un código para *${px}canjear*.`;
     const tail =
         `\n${saving}\n` +
         `> Lo que ganes es para *${session.n}*. Cada quien pide el suyo con *${px}${info.command}*.\n` +
@@ -541,4 +552,42 @@ export async function sendGame(ctx: any, game: GameId, options: { room?: string;
     }
 
     await sock.sendMessage(chat, { text: `${info.emoji} *${info.name}*\n\n${options.how}\n${tail}` }, { quoted: m });
+}
+
+// ───────────────────────── comandos ─────────────────────────
+
+type GameCommand = {
+    game: GameId;
+    command: string[];
+    description: string;
+    usage?: string;
+    /** Cómo se juega, en dos o tres líneas. */
+    how: (px: string) => string;
+    /** Opciones que salen de lo que se escribió tras el comando. */
+    options?: (words: string[]) => { room?: string; fresh?: boolean };
+};
+
+/** Crea el comando que envía un juego al chat (categoría `games`). */
+export function gameCommand(def: GameCommand) {
+    return {
+        command: def.command,
+        description: def.description,
+        usage: def.usage,
+        category: 'games',
+        run: async (ctx: any) => {
+            const { sock, chat } = ctx;
+            const m = ctx.m || ctx.msg;
+            const px = ctx.usedPrefix || ctx.prefix || config.prefix || '.';
+            try {
+                const jid = (await UserJid(sock, chat, ctx.sender || m?.sender)) || ctx.sender || m?.sender;
+                if (!jid) return sock.sendMessage(chat, { text: '✿ No pude identificarte. Inténtalo de nuevo.' }, { quoted: m });
+
+                const words = (Array.isArray(ctx.args) ? ctx.args : []).map((word: any) => String(word)).filter((word: string) => !FILE_WORDS.has(word.toLowerCase()));
+                await sendGame(ctx, def.game, { ...(def.options ? def.options(words) : {}), jid, how: def.how(px) });
+            } catch (error: any) {
+                console.error(`[GAMES] Error en ${def.command[0]}:`, error);
+                await sock.sendMessage(chat, { text: '✿ No pude preparar el juego. Inténtalo de nuevo en un momento.' }, { quoted: m }).catch(() => null);
+            }
+        }
+    };
 }

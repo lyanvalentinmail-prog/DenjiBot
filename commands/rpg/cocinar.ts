@@ -8,7 +8,7 @@ export default rpgCommand({
         const raw = Object.keys(p.inv).filter(id => count(p, id) > 0 && cookResult(id)).map(id => ITEMS[id]);
 
         if (!args.length) {
-            if (!raw.length) return reply(`🍳 No tienes nada que cocinar.\n> Consigue carne con *${px}cazar* o peces con *${px}lanzar*.`);
+            if (!raw.length) return reply(`🍳 No tienes nada que cocinar.\n> Consigue carne con *${px}cazar* o peces con *${px}fish*.`);
             const list = raw.map(it => `› ${it.emoji} ${it.name} ×${count(p, it.id)} → ${label(cookResult(it.id)!)}`).join('\n');
             return reply(`🍳 *Puedes cocinar*\n\n${list}\n\n> Ejemplo » *${px}cocinar carne todo*`);
         }
