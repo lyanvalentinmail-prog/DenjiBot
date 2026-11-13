@@ -1,0 +1,464 @@
+<style>
+/*@CSS*/
+.stat{font-size:12px;opacity:.9}
+.stat b{font-size:14px;color:#ffd166}
+#info{font-weight:600;font-size:13px;height:24px;line-height:24px;text-align:center;width:100%}
+#ctl{margin-top:8px}
+#ctl .btn{height:40px;padding:0 10px;margin:0 3px;font-size:13px;flex:1}
+canvas{border-radius:6px}
+</style>
+<div id="app">
+<div class="bar"><span class="title">♟️ Ajedrez</span><span id="net"></span></div>
+<div class="bar"><span class="stat">Ganadas <b id="w">0</b></span><span class="stat">Perdidas <b id="l">0</b></span><span class="stat">Tablas <b id="d">0</b></span></div>
+<div id="info"></div>
+<canvas id="c"></canvas>
+<div class="row" id="ctl"><div class="btn" id="new">Nueva</div><div class="btn" id="mode" style="flex:1.7"></div><div class="btn" id="flip">Girar</div></div>
+<div class="hint" id="hint"></div>
+<div id="code"></div>
+</div>
+<script>
+/*@CFG*/
+/*@SHARED*/
+(function () {
+  // ── Reglas ──────────────────────────────────────────────────────────────
+  // Tablero: 64 casillas, 0 = a8 ... 63 = h1. Mayúsculas = blancas.
+  var START = 'rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1';
+  var KNIGHT = [[1, 2], [2, 1], [2, -1], [1, -2], [-1, -2], [-2, -1], [-2, 1], [-1, 2]];
+  var KING = [[1, 0], [1, 1], [0, 1], [-1, 1], [-1, 0], [-1, -1], [0, -1], [1, -1]];
+  var ROOK = [[1, 0], [-1, 0], [0, 1], [0, -1]], BISHOP = [[1, 1], [1, -1], [-1, 1], [-1, -1]];
+  var VALUE = { p: 100, n: 320, b: 330, r: 500, q: 900, k: 20000 };
+
+  function isWhite(piece) { return piece >= 'A' && piece <= 'Z'; }
+
+  function parse(fen) {
+    var parts = fen.split(' '), b = [], rows = parts[0].split('/');
+    for (var r = 0; r < 8; r++) for (var i = 0; i < rows[r].length; i++) {
+      var ch = rows[r][i];
+      if (ch >= '1' && ch <= '8') for (var k = 0; k < +ch; k++) b.push(''); else b.push(ch);
+    }
+    var ep = -1;
+    if (parts[3] && parts[3] !== '-') ep = (8 - +parts[3][1]) * 8 + (parts[3].charCodeAt(0) - 97);
+    return { b: b, w: parts[1] !== 'b', c: parts[2] === '-' ? '' : (parts[2] || ''), ep: ep, hm: +parts[4] || 0, n: +parts[5] || 1 };
+  }
+
+  function toFen(s) {
+    var out = '';
+    for (var r = 0; r < 8; r++) {
+      var empty = 0;
+      for (var f = 0; f < 8; f++) {
+        var p = s.b[r * 8 + f];
+        if (!p) empty++; else { if (empty) { out += empty; empty = 0; } out += p; }
+      }
+      if (empty) out += empty;
+      if (r < 7) out += '/';
+    }
+    var ep = s.ep < 0 ? '-' : String.fromCharCode(97 + s.ep % 8) + (8 - Math.floor(s.ep / 8));
+    return out + ' ' + (s.w ? 'w' : 'b') + ' ' + (s.c || '-') + ' ' + ep + ' ' + s.hm + ' ' + s.n;
+  }
+
+  /** ¿Ataca el bando `white` la casilla `sq`? */
+  function attacked(b, sq, white) {
+    var r = Math.floor(sq / 8), f = sq % 8, i, d, rr, ff, p;
+    var pr = r + (white ? 1 : -1);
+    if (pr >= 0 && pr < 8) {
+      if (f > 0 && b[pr * 8 + f - 1] === (white ? 'P' : 'p')) return true;
+      if (f < 7 && b[pr * 8 + f + 1] === (white ? 'P' : 'p')) return true;
+    }
+    for (i = 0; i < 8; i++) {
+      rr = r + KNIGHT[i][0]; ff = f + KNIGHT[i][1];
+      if (rr >= 0 && rr < 8 && ff >= 0 && ff < 8 && b[rr * 8 + ff] === (white ? 'N' : 'n')) return true;
+      rr = r + KING[i][0]; ff = f + KING[i][1];
+      if (rr >= 0 && rr < 8 && ff >= 0 && ff < 8 && b[rr * 8 + ff] === (white ? 'K' : 'k')) return true;
+    }
+    for (i = 0; i < 8; i++) {
+      d = KING[i]; rr = r + d[0]; ff = f + d[1];
+      var straight = d[0] === 0 || d[1] === 0;
+      while (rr >= 0 && rr < 8 && ff >= 0 && ff < 8) {
+        p = b[rr * 8 + ff];
+        if (p) {
+          if (isWhite(p) === white) {
+            var t = p.toLowerCase();
+            if (t === 'q' || (straight ? t === 'r' : t === 'b')) return true;
+          }
+          break;
+        }
+        rr += d[0]; ff += d[1];
+      }
+    }
+    return false;
+  }
+
+  function kingSquare(b, white) { return b.indexOf(white ? 'K' : 'k'); }
+  function inCheck(s, white) { var k = kingSquare(s.b, white); return k >= 0 && attacked(s.b, k, !white); }
+
+  /** Jugadas sin comprobar si dejan al rey en jaque. */
+  function pseudo(s) {
+    var b = s.b, white = s.w, moves = [], sq, r, f, p, t, i, d, rr, ff, to;
+    function add(from, dest, flag, promo) { moves.push({ f: from, t: dest, x: b[dest] || (flag === 'e' ? 'p' : ''), fl: flag || '', p: promo || '' }); }
+    for (sq = 0; sq < 64; sq++) {
+      p = b[sq];
+      if (!p || isWhite(p) !== white) continue;
+      r = Math.floor(sq / 8); f = sq % 8; t = p.toLowerCase();
+      if (t === 'p') {
+        var dir = white ? -1 : 1, home = white ? 6 : 1, last = white ? 0 : 7;
+        rr = r + dir;
+        if (rr >= 0 && rr < 8) {
+          if (!b[rr * 8 + f]) {
+            add(sq, rr * 8 + f, '', rr === last ? 'q' : '');
+            if (r === home && !b[(r + 2 * dir) * 8 + f]) add(sq, (r + 2 * dir) * 8 + f, 'd');
+          }
+          for (i = -1; i <= 1; i += 2) {
+            ff = f + i;
+            if (ff < 0 || ff > 7) continue;
+            to = rr * 8 + ff;
+            if (b[to] && isWhite(b[to]) !== white) add(sq, to, '', rr === last ? 'q' : '');
+            else if (to === s.ep) add(sq, to, 'e');
+          }
+        }
+      } else if (t === 'n' || t === 'k') {
+        var steps = t === 'n' ? KNIGHT : KING;
+        for (i = 0; i < 8; i++) {
+          rr = r + steps[i][0]; ff = f + steps[i][1];
+          if (rr < 0 || rr > 7 || ff < 0 || ff > 7) continue;
+          to = rr * 8 + ff;
+          if (!b[to] || isWhite(b[to]) !== white) add(sq, to);
+        }
+        if (t === 'k') {
+          var row = white ? 7 : 0;
+          if (sq === row * 8 + 4 && !attacked(b, sq, !white)) {
+            if (s.c.indexOf(white ? 'K' : 'k') >= 0 && !b[sq + 1] && !b[sq + 2] && b[sq + 3] === (white ? 'R' : 'r') && !attacked(b, sq + 1, !white)) add(sq, sq + 2, 'c');
+            if (s.c.indexOf(white ? 'Q' : 'q') >= 0 && !b[sq - 1] && !b[sq - 2] && !b[sq - 3] && b[sq - 4] === (white ? 'R' : 'r') && !attacked(b, sq - 1, !white)) add(sq, sq - 2, 'c');
+          }
+        }
+      } else {
+        var rays = t === 'r' ? ROOK : t === 'b' ? BISHOP : KING;
+        for (i = 0; i < rays.length; i++) {
+          d = rays[i]; rr = r + d[0]; ff = f + d[1];
+          while (rr >= 0 && rr < 8 && ff >= 0 && ff < 8) {
+            to = rr * 8 + ff;
+            if (!b[to]) add(sq, to);
+            else { if (isWhite(b[to]) !== white) add(sq, to); break; }
+            rr += d[0]; ff += d[1];
+          }
+        }
+      }
+    }
+    return moves;
+  }
+
+  function play(s, m) {
+    var b = s.b.slice(), p = b[m.f], white = s.w, c = s.c;
+    b[m.t] = m.p ? (white ? m.p.toUpperCase() : m.p) : p;
+    b[m.f] = '';
+    if (m.fl === 'e') b[m.t + (white ? 8 : -8)] = '';
+    if (m.fl === 'c') {
+      if (m.t > m.f) { b[m.f + 1] = b[m.f + 3]; b[m.f + 3] = ''; }
+      else { b[m.f - 1] = b[m.f - 4]; b[m.f - 4] = ''; }
+    }
+    if (c) {
+      if (p === 'K') c = c.replace(/[KQ]/g, ''); else if (p === 'k') c = c.replace(/[kq]/g, '');
+      if (m.f === 63 || m.t === 63) c = c.replace('K', '');
+      if (m.f === 56 || m.t === 56) c = c.replace('Q', '');
+      if (m.f === 7 || m.t === 7) c = c.replace('k', '');
+      if (m.f === 0 || m.t === 0) c = c.replace('q', '');
+    }
+    return {
+      b: b, w: !white, c: c, ep: m.fl === 'd' ? (m.f + m.t) / 2 : -1,
+      hm: p.toLowerCase() === 'p' || m.x ? 0 : s.hm + 1, n: s.n + (white ? 0 : 1)
+    };
+  }
+
+  function legal(s) {
+    return pseudo(s).filter(function (m) { return !inCheck(play(s, m), s.w); });
+  }
+
+  function lonely(b) {
+    // Sin material para dar mate: solo reyes, o rey y una pieza menor.
+    var minor = 0;
+    for (var i = 0; i < 64; i++) {
+      var t = b[i].toLowerCase();
+      if (!t || t === 'k') continue;
+      if (t === 'n' || t === 'b') minor++; else return false;
+    }
+    return minor <= 1;
+  }
+
+  // ── Bot ─────────────────────────────────────────────────────────────────
+  function evaluate(s) {
+    var score = 0, b = s.b, queens = b.indexOf('Q') >= 0 || b.indexOf('q') >= 0;
+    for (var sq = 0; sq < 64; sq++) {
+      var p = b[sq];
+      if (!p) continue;
+      var white = isWhite(p), t = p.toLowerCase(), r = Math.floor(sq / 8), f = sq % 8;
+      var center = 3.5 - Math.max(Math.abs(f - 3.5), Math.abs(r - 3.5)), adv = white ? 6 - r : r - 1, v = VALUE[t];
+      if (t === 'p') v += adv * 6 + (f > 2 && f < 5 ? adv * 5 : 0);
+      else if (t === 'n') v += center * 14;
+      else if (t === 'b') v += center * 8;
+      else if (t === 'q') v += center * 3;
+      else if (t === 'r') v += (white ? r === 1 : r === 6) ? 18 : 0;
+      else if (t === 'k') v += queens ? ((white ? r === 7 : r === 0) ? 12 : -18) + (f < 3 || f > 5 ? 14 : 0) : center * 12;
+      score += white ? v : -v;
+    }
+    return s.w ? score : -score;
+  }
+
+  function ordered(s) {
+    var moves = pseudo(s);
+    for (var i = 0; i < moves.length; i++) {
+      var m = moves[i];
+      m.o = m.x ? 10 * VALUE[m.x.toLowerCase()] - VALUE[s.b[m.f].toLowerCase()] / 10 : (m.p ? 800 : 0);
+    }
+    return moves.sort(function (a, b) { return b.o - a.o; });
+  }
+
+  function search(s, depth, alpha, beta) {
+    if (depth === 0) return evaluate(s);
+    var moves = ordered(s);
+    for (var i = 0; i < moves.length; i++) {
+      var m = moves[i];
+      // Capturar al rey: la jugada anterior era ilegal o es mate.
+      if (m.x && m.x.toLowerCase() === 'k') return 90000 + depth;
+      var value = -search(play(s, m), depth - 1, -beta, -alpha);
+      if (value > alpha) { alpha = value; if (alpha >= beta) break; }
+    }
+    return alpha;
+  }
+
+  function botMove(s, level) {
+    var moves = legal(s), best = null, bestValue = -1e9;
+    if (!moves.length) return null;
+    // Nivel fácil: mira poco y a veces juega cualquier cosa.
+    if (level === 1 && Math.random() < 0.22) return moves[Math.floor(Math.random() * moves.length)];
+    var depth = level, noise = level === 1 ? 70 : level === 2 ? 14 : 4;
+    for (var i = 0; i < moves.length; i++) {
+      var next = play(s, moves[i]);
+      var value = -search(next, depth, -1e9, 1e9) + (Math.random() - 0.5) * noise;
+      // Ahogar al rival con ventaja sería regalar tablas.
+      if (value > 300 && !inCheck(next, next.w) && !legal(next).length) value = 0;
+      if (value > bestValue) { bestValue = value; best = moves[i]; }
+    }
+    return best;
+  }
+
+  // ── Partida ─────────────────────────────────────────────────────────────
+  var MODES = ['Bot fácil', 'Bot medio', 'Bot difícil', '2 jugadores', 'En línea'];
+  var st = parse(START), mode = 0, ply = 0, over = '', seen = {}, epoch = 0;
+  var selected = -1, targets = [], lastMove = null, flipped = false, thinking = false;
+  var gains = [0, 0, 0], me = Math.random().toString(36).slice(2, 8);
+
+  function values() { return [DJ.base[0] + gains[0], DJ.base[1] + gains[1], DJ.base[2] + gains[2]]; }
+  function extra() { return JSON.stringify({ f: toFen(st), m: mode, l: mode < 3 ? mode + 1 : 0, p: ply, o: over, e: epoch }); }
+  var paintStatus = djStatusUi(values, function () { return gains[0] + gains[1] + gains[2] > 0; });
+
+  function keyOf(s) { return toFen(s).split(' ').slice(0, 4).join(' '); }
+
+  function load(text) {
+    try {
+      var data = JSON.parse(text);
+      if (!data || typeof data.f !== 'string') return false;
+      var next = parse(data.f);
+      if (next.b.length !== 64 || kingSquare(next.b, true) < 0 || kingSquare(next.b, false) < 0) return false;
+      st = next; mode = Math.max(0, Math.min(4, data.m | 0)); ply = data.p | 0; over = data.o || ''; epoch = data.e | 0;
+      seen = {}; selected = -1; targets = []; lastMove = null; thinking = false;
+      refresh();
+      if (!over && mode < 3 && !st.w) botTurn();
+      return true;
+    } catch (e) { return false; }
+  }
+
+  function result() {
+    if (over) return over;
+    var moves = legal(st);
+    if (!moves.length) return inCheck(st, st.w) ? (st.w ? 'b' : 'w') : 'd';
+    if (st.hm >= 100 || lonely(st.b) || seen[keyOf(st)] >= 3) return 'd';
+    return '';
+  }
+
+  function refresh() {
+    // En pantalla va el total de siempre: lo de antes más lo de esta partida.
+    var rec = values().map(function (n, i) { return n + ((CFG.rec || [])[i] || 0); });
+    $('w').textContent = rec[0]; $('l').textContent = rec[1]; $('d').textContent = rec[2];
+    $('mode').textContent = MODES[mode];
+    var text;
+    if (over === 'd') text = 'Tablas';
+    else if (over) text = 'Jaque mate: ganan las ' + (over === 'w' ? 'blancas' : 'negras') + (mode < 3 ? (over === 'w' ? ' — ¡ganaste!' : ' — ganó el bot') : '');
+    else if (thinking) text = 'El bot está pensando…';
+    else text = 'Juegan las ' + (st.w ? 'blancas' : 'negras') + (inCheck(st, st.w) ? ' — ¡jaque!' : '') + (mode < 3 && st.w ? ' (tú)' : '');
+    $('info').textContent = text;
+    $('hint').textContent = mode < 3
+      ? 'Juegas con blancas. Ganar da ' + CFG.rewards[mode + 1].toLocaleString('en-US') + ' ' + CFG.coin + '. La partida se guarda sola.'
+      : mode === 3 ? 'Dos personas en este teléfono, por turnos.'
+      : (DJ.online() ? 'En línea: quien abra este mismo mensaje ve y mueve el mismo tablero.' : 'En línea necesita conexión (ahora no hay).');
+    draw();
+  }
+
+  function finish() {
+    over = result();
+    if (!over) return;
+    // Solo cuentan las partidas contra el bot.
+    if (mode < 3) gains[over === 'w' ? 0 : over === 'b' ? 1 : 2]++;
+  }
+
+  function commit(m, remote) {
+    st = play(st, m); ply++; lastMove = m; selected = -1; targets = [];
+    var key = keyOf(st); seen[key] = (seen[key] || 0) + 1;
+    finish();
+    refresh();
+    if (!remote) {
+      DJ.save(values(), extra());
+      paintStatus();
+      if (mode === 4) DJ.send({ c: me, p: ply, e: epoch, x: extra() });
+    }
+  }
+
+  function botTurn() {
+    if (over || mode > 2 || st.w) return;
+    thinking = true; refresh();
+    setTimeout(function () {
+      if (!thinking) return;
+      var m = botMove(st, mode + 1);
+      thinking = false;
+      if (m) commit(m); else refresh();
+    }, 80);
+  }
+
+  function newGame(nextMode) {
+    st = parse(START); ply = 0; over = ''; seen = {}; selected = -1; targets = []; lastMove = null; thinking = false; epoch++;
+    if (nextMode !== undefined) mode = nextMode;
+    refresh();
+    DJ.save(values(), extra());
+    if (mode === 4) DJ.send({ c: me, p: 0, e: epoch, x: extra() });
+  }
+
+  // ── Dibujo ──────────────────────────────────────────────────────────────
+  var W = djWidth(), cell = Math.floor(W / 8), size = cell * 8;
+  var canvas = $('c'), ctx = canvas.getContext('2d'), ratio = Math.min(2, window.devicePixelRatio || 1);
+  canvas.width = size * ratio; canvas.height = size * ratio;
+  canvas.style.width = size + 'px'; canvas.style.height = size + 'px';
+  ctx.scale(ratio, ratio);
+
+  function poly(points) {
+    ctx.beginPath();
+    for (var i = 0; i < points.length; i += 2) { if (i) ctx.lineTo(points[i], points[i + 1]); else ctx.moveTo(points[i], points[i + 1]); }
+    ctx.closePath(); ctx.fill(); ctx.stroke();
+  }
+  function ball(x, y, r) { ctx.beginPath(); ctx.arc(x, y, r, 0, 7); ctx.fill(); ctx.stroke(); }
+
+  // Piezas dibujadas con formas (no dependen de las fuentes del teléfono).
+  function piece(p, cx, cy) {
+    var white = isWhite(p), t = p.toLowerCase(), u = cell / 100;
+    ctx.save(); ctx.translate(cx, cy); ctx.scale(u, u);
+    ctx.fillStyle = white ? '#fafafa' : '#2a2a2e'; ctx.strokeStyle = white ? '#1c1c1c' : '#d8d8d8'; ctx.lineWidth = 3.2; ctx.lineJoin = 'round';
+    var base = function (w) { poly([-w, 38, w, 38, w - 4, 27, -w + 4, 27]); };
+    if (t === 'p') {
+      base(22); poly([-13, 27, 13, 27, 7, -2, -7, -2]); ball(0, -12, 13);
+    } else if (t === 'r') {
+      base(27); poly([-18, 27, 18, 27, 16, -14, -16, -14]);
+      poly([-23, -14, 23, -14, 23, -34, 13, -34, 13, -25, 5, -25, 5, -34, -5, -34, -5, -25, -13, -25, -13, -34, -23, -34]);
+    } else if (t === 'n') {
+      base(26);
+      poly([-17, 27, 19, 27, 20, 2, 12, -20, -2, -34, -8, -26, -24, -6, -19, 4, -4, -4, -15, 14]);
+      ctx.fillStyle = ctx.strokeStyle; ctx.beginPath(); ctx.arc(-4, -18, 3, 0, 7); ctx.fill();
+    } else if (t === 'b') {
+      base(25); poly([-14, 27, 14, 27, 8, 10, -8, 10]);
+      ctx.beginPath(); ctx.ellipse(0, -8, 14, 21, 0, 0, 7); ctx.fill(); ctx.stroke();
+      ball(0, -34, 5);
+      ctx.beginPath(); ctx.moveTo(-2, -16); ctx.lineTo(6, -4); ctx.stroke();
+    } else if (t === 'q') {
+      base(28); poly([-19, 27, 19, 27, 27, -22, 14, -4, 9, -28, 0, -6, -9, -28, -14, -4, -27, -22]);
+      ball(-27, -25, 5); ball(-9, -31, 5); ball(9, -31, 5); ball(27, -25, 5);
+    } else {
+      base(28); poly([-19, 27, 19, 27, 24, -8, 10, -16, -10, -16, -24, -8]);
+      poly([-4, -16, 4, -16, 4, -26, 12, -26, 12, -33, 4, -33, 4, -41, -4, -41, -4, -33, -12, -33, -12, -26, -4, -26]);
+    }
+    ctx.restore();
+  }
+
+  function cellOf(sq) {
+    var r = Math.floor(sq / 8), f = sq % 8;
+    if (flipped) { r = 7 - r; f = 7 - f; }
+    return { x: f * cell, y: r * cell };
+  }
+
+  function draw() {
+    var check = !over || over !== 'd' ? (inCheck(st, st.w) ? kingSquare(st.b, st.w) : -1) : -1, sq, c;
+    for (sq = 0; sq < 64; sq++) {
+      c = cellOf(sq);
+      var dark = (Math.floor(sq / 8) + sq % 8) % 2 === 1;
+      ctx.fillStyle = dark ? '#6f8f72' : '#e9edcc';
+      if (lastMove && (sq === lastMove.f || sq === lastMove.t)) ctx.fillStyle = dark ? '#b9a743' : '#f1e27a';
+      if (sq === selected) ctx.fillStyle = '#7fb4ff';
+      if (sq === check) ctx.fillStyle = '#ff7b7b';
+      ctx.fillRect(c.x, c.y, cell, cell);
+    }
+    ctx.font = 'bold ' + Math.max(8, Math.round(cell * 0.2)) + 'px system-ui,sans-serif'; ctx.textAlign = 'left';
+    for (var i = 0; i < 8; i++) {
+      ctx.fillStyle = i % 2 ? '#e9edcc' : '#6f8f72';
+      ctx.fillText(String(flipped ? i + 1 : 8 - i), 2, i * cell + cell * 0.24);
+      ctx.fillStyle = i % 2 ? '#6f8f72' : '#e9edcc';
+      ctx.fillText('abcdefgh'[flipped ? 7 - i : i], i * cell + cell * 0.8, size - 3);
+    }
+    for (sq = 0; sq < 64; sq++) if (st.b[sq]) { c = cellOf(sq); piece(st.b[sq], c.x + cell / 2, c.y + cell / 2); }
+    for (i = 0; i < targets.length; i++) {
+      c = cellOf(targets[i].t);
+      ctx.fillStyle = 'rgba(30,60,120,.45)';
+      ctx.beginPath();
+      if (st.b[targets[i].t]) { ctx.lineWidth = 4; ctx.strokeStyle = 'rgba(30,60,120,.6)'; ctx.arc(c.x + cell / 2, c.y + cell / 2, cell * 0.44, 0, 7); ctx.stroke(); }
+      else { ctx.arc(c.x + cell / 2, c.y + cell / 2, cell * 0.15, 0, 7); ctx.fill(); }
+    }
+  }
+
+  // ── Controles ───────────────────────────────────────────────────────────
+  djTap(canvas, function (p) {
+    if (over || thinking) return;
+    if (mode < 3 && !st.w) return;
+    if (mode === 4 && !DJ.online()) return;
+    var f = Math.min(7, Math.floor(p.x * 8)), r = Math.min(7, Math.floor(p.y * 8));
+    if (flipped) { f = 7 - f; r = 7 - r; }
+    var sq = r * 8 + f, i;
+    for (i = 0; i < targets.length; i++) if (targets[i].t === sq) {
+      commit(targets[i]);
+      if (!over && mode < 3) botTurn();
+      return;
+    }
+    if (st.b[sq] && isWhite(st.b[sq]) === st.w) {
+      selected = sq;
+      targets = legal(st).filter(function (m) { return m.f === sq; });
+    } else { selected = -1; targets = []; }
+    draw();
+  });
+
+  var armed = 0;
+  djTap($('new'), function () {
+    // A mitad de partida pide confirmación con un segundo toque.
+    if (ply > 0 && !over && Date.now() - armed > 3000) { armed = Date.now(); $('hint').textContent = 'Toca "Nueva" otra vez para abandonar esta partida.'; return; }
+    armed = 0; newGame();
+  });
+  djTap($('mode'), function () {
+    if (ply > 0 && !over) { $('hint').textContent = 'Para cambiar de modo, termina la partida o pulsa "Nueva".'; return; }
+    newGame((mode + 1) % MODES.length);
+  });
+  djTap($('flip'), function () { flipped = !flipped; draw(); });
+
+  // En línea: el tablero de este mensaje es una sala; gana el estado más avanzado.
+  DJ.room('ch' + CFG.id, function (msg) {
+    if (!msg || msg.c === me) return;
+    if (msg.ask) { if (mode === 4 && ply > 0) DJ.send({ c: me, p: ply, e: epoch, x: extra() }); return; }
+    if (typeof msg.x !== 'string') return;
+    if (msg.e > epoch || (msg.e === epoch && msg.p > ply)) load(msg.x);
+  });
+  DJ.onState(function (msg) {
+    // Al abrir: si el bot tiene una partida más avanzada que la de la página, se usa esa.
+    if (msg.t === 'st' && typeof msg.x === 'string' && msg.x && ply === 0) {
+      try { var data = JSON.parse(msg.x); if ((data.e | 0) > epoch || ((data.e | 0) === epoch && (data.p | 0) > ply)) load(msg.x); } catch (e) {}
+      DJ.send({ c: me, ask: 1 });
+    }
+    refresh();
+  });
+  DJ.onStatus(function () { paintStatus(); if ($('hint')) refresh(); });
+
+  if (!CFG.x || !load(CFG.x)) refresh();
+  djFit();
+  DJ.start();
+})();
+</script>

@@ -17,6 +17,76 @@ if (!(global as any).db) {
 let stmtSaveUser: any;
 let stmtSaveChat: any;
 let stmtSaveChatUser: any;
+let stmtKvGet: any;
+let stmtKvSet: any;
+let stmtKvDel: any;
+let stmtKvList: any;
+let stmtKvPrune: any;
+
+const parseJson = (text: any, fallback: any): any => {
+    if (text && typeof text === 'object') return text;
+    try {
+        const value = JSON.parse(text || '');
+        return value && typeof value === 'object' ? value : fallback;
+    } catch {
+        return fallback;
+    }
+};
+
+// ───────────────────────── almacén clave-valor ─────────────────────────
+// Datos sueltos que no pertenecen a una persona: partidas de los juegos HTML,
+// el jefe del RPG de cada chat... Si la base de datos aún no está abierta
+// (pruebas) se guarda solo en memoria.
+
+const kvMemory = new Map<string, { value: string; updated: number }>();
+const likePrefix = (prefix: string): string => prefix.replace(/[\\%_]/g, '\\$&') + '%';
+
+export function kvGet<T = any>(key: string, fallback: T | null = null): T | null {
+    try {
+        const raw = db ? stmtKvGet.get(key)?.value : kvMemory.get(key)?.value;
+        return raw == null ? fallback : JSON.parse(raw) as T;
+    } catch {
+        return fallback;
+    }
+}
+
+export function kvSet(key: string, value: any): void {
+    try {
+        const raw = JSON.stringify(value);
+        if (db) stmtKvSet.run(key, raw, Date.now());
+        else kvMemory.set(key, { value: raw, updated: Date.now() });
+    } catch (e) {
+        console.error('Error en kvSet:', e);
+    }
+}
+
+export function kvDel(key: string): void {
+    try {
+        if (db) stmtKvDel.run(key);
+        else kvMemory.delete(key);
+    } catch {}
+}
+
+/** Todas las entradas cuya clave empieza por `prefix`. */
+export function kvList<T = any>(prefix: string): { key: string; value: T; updated: number }[] {
+    try {
+        const rows: any[] = db
+            ? stmtKvList.all(likePrefix(prefix))
+            : [...kvMemory].filter(([key]) => key.startsWith(prefix)).map(([key, row]) => ({ key, ...row }));
+        return rows.map(row => ({ key: row.key, value: JSON.parse(row.value) as T, updated: Number(row.updated) || 0 }));
+    } catch {
+        return [];
+    }
+}
+
+/** Borra las entradas con ese prefijo que no se tocan desde hace `maxAgeMs`. */
+export function kvPrune(prefix: string, maxAgeMs: number): void {
+    const limit = Date.now() - maxAgeMs;
+    try {
+        if (db) stmtKvPrune.run(likePrefix(prefix), limit);
+        else for (const [key, row] of kvMemory) if (key.startsWith(prefix) && row.updated < limit) kvMemory.delete(key);
+    } catch {}
+}
 
 export const loadDB = () => {
     if (!existsSync(dbDir)) {
@@ -80,10 +150,21 @@ export const loadDB = () => {
     try { db.exec("ALTER TABLE chats ADD COLUMN sWelcome TEXT DEFAULT ''"); } catch {}
     try { db.exec("ALTER TABLE chats ADD COLUMN sGoodbye TEXT DEFAULT ''"); } catch {}
     try { db.exec("ALTER TABLE chat_users ADD COLUMN stats TEXT DEFAULT '{}'"); } catch {}
+    // Personaje del RPG (inventario, nivel, equipo...) de cada persona en cada chat.
+    try { db.exec("ALTER TABLE chat_users ADD COLUMN rpg TEXT DEFAULT '{}'"); } catch {}
+    // Récords de los juegos HTML de cada persona (valen en todos los chats).
+    try { db.exec("ALTER TABLE users ADD COLUMN games TEXT DEFAULT '{}'"); } catch {}
+    // Almacén clave-valor: partidas de los juegos, jefe de cada chat, etc.
+    db.exec('CREATE TABLE IF NOT EXISTS kv (key TEXT PRIMARY KEY, value TEXT, updated INTEGER DEFAULT 0)');
+    stmtKvGet = db.prepare('SELECT value FROM kv WHERE key = ?');
+    stmtKvSet = db.prepare('INSERT INTO kv (key, value, updated) VALUES (?, ?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated = excluded.updated');
+    stmtKvDel = db.prepare('DELETE FROM kv WHERE key = ?');
+    stmtKvList = db.prepare("SELECT key, value, updated FROM kv WHERE key LIKE ? ESCAPE '\\'");
+    stmtKvPrune = db.prepare("DELETE FROM kv WHERE key LIKE ? ESCAPE '\\' AND updated < ?");
 
     stmtSaveUser = db.prepare(`
-        INSERT INTO users (id, name, exp, level, usedcommands, description, marry, genre, birth, sPack, sAuthor)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        INSERT INTO users (id, name, exp, level, usedcommands, description, marry, genre, birth, sPack, sAuthor, games)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(id) DO UPDATE SET
             name = excluded.name,
             exp = excluded.exp,
@@ -94,7 +175,8 @@ export const loadDB = () => {
             genre = excluded.genre,
             birth = excluded.birth,
             sPack = excluded.sPack,
-            sAuthor = excluded.sAuthor
+            sAuthor = excluded.sAuthor,
+            games = excluded.games
     `);
 
     stmtSaveChat = db.prepare(`
@@ -118,8 +200,8 @@ export const loadDB = () => {
     `);
 
     stmtSaveChatUser = db.prepare(`
-        INSERT INTO chat_users (chat_id, user_id, messageCount, lastSeen, usedTime, lastCmd, coins, bank, afk, afkReason, characters, stats)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        INSERT INTO chat_users (chat_id, user_id, messageCount, lastSeen, usedTime, lastCmd, coins, bank, afk, afkReason, characters, stats, rpg)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(chat_id, user_id) DO UPDATE SET
             messageCount = excluded.messageCount,
             lastSeen = excluded.lastSeen,
@@ -130,12 +212,13 @@ export const loadDB = () => {
             afk = excluded.afk,
             afkReason = excluded.afkReason,
             characters = excluded.characters,
-            stats = excluded.stats
+            stats = excluded.stats,
+            rpg = excluded.rpg
     `);
 
     const usersRows = db.prepare('SELECT * FROM users').all() as any[];
     for (const u of usersRows) {
-        (global as any).db.data.users[u.id] = { ...u };
+        (global as any).db.data.users[u.id] = { ...u, games: parseJson(u.games, {}) };
     }
 
     const chatsRows = db.prepare('SELECT * FROM chats').all() as any[];
@@ -169,7 +252,8 @@ export const loadDB = () => {
         chatObj.users[cu.user_id] = {
             ...cu,
             characters: JSON.parse(cu.characters || '[]'),
-            stats: JSON.parse(cu.stats || '{}')
+            stats: JSON.parse(cu.stats || '{}'),
+            rpg: parseJson(cu.rpg, {})
         };
         delete chatObj.users[cu.user_id].chat_id;
         delete chatObj.users[cu.user_id].user_id;
@@ -193,7 +277,8 @@ export const saveDB = (chatId?: string, senderId?: string) => {
                 u.genre || '',
                 u.birth || '',
                 u.sPack || '',
-                u.sAuthor || ''
+                u.sAuthor || '',
+                JSON.stringify(u.games || {})
             );
         }
 
@@ -231,7 +316,8 @@ export const saveDB = (chatId?: string, senderId?: string) => {
                     cu.afk ?? -1,
                     cu.afkReason || '',
                     JSON.stringify(cu.characters || []),
-                    JSON.stringify(cu.stats || {})
+                    JSON.stringify(cu.stats || {}),
+                    JSON.stringify(cu.rpg || {})
                 );
             }
         }

@@ -24,6 +24,8 @@ export const config = {
     reactions: structuredClone(defaultSettings.reactions) as Reactions,
     /** Cómo responde el comando de la hora. */
     clockView: 'auto' as ClockView,
+    /** Servidores por los que los juegos HTML guardan y se conectan. */
+    gameServers: [...defaultSettings.gameServers],
     logMode: 'detallado' as LogMode
 };
 
@@ -37,6 +39,7 @@ function applySettings(s: Settings): void {
     config.menuBanner = resolveMenuBanner(s);
     config.reactions = s.reactions;
     config.clockView = s.clockView;
+    config.gameServers = s.gameServers;
     config.logMode = s.logMode;
     config.banner = resolveBanner(s.banner);
     config.icon = config.banner;

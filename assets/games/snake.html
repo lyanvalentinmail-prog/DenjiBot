@@ -1,0 +1,179 @@
+<style>
+/*@CSS*/
+#pad{margin-top:8px}
+#pad .btn{width:64px;height:48px;margin:3px}
+#pad svg{pointer-events:none}
+.stat{font-size:12px;opacity:.9}
+.stat b{font-size:15px;color:#ffd166}
+</style>
+<div id="app">
+<div class="bar"><span class="title">🐍 Snake</span><span id="net"></span></div>
+<div class="bar"><span class="stat">Puntos <b id="score">0</b></span><span class="stat">Récord <b id="best">0</b></span><span class="stat">Ganado <b id="won">0</b></span></div>
+<canvas id="c"></canvas>
+<div id="pad">
+<div class="row"><div class="btn" data-d="0"><svg viewBox="0 0 24 24" width="24" height="24" style="transform:rotate(0deg)"><path d="M12 5l8 13H4z" fill="#fff"/></svg></div></div>
+<div class="row"><div class="btn" data-d="3"><svg viewBox="0 0 24 24" width="24" height="24" style="transform:rotate(270deg)"><path d="M12 5l8 13H4z" fill="#fff"/></svg></div><div class="btn" data-d="2"><svg viewBox="0 0 24 24" width="24" height="24" style="transform:rotate(180deg)"><path d="M12 5l8 13H4z" fill="#fff"/></svg></div><div class="btn" data-d="1"><svg viewBox="0 0 24 24" width="24" height="24" style="transform:rotate(90deg)"><path d="M12 5l8 13H4z" fill="#fff"/></svg></div></div>
+</div>
+<div class="hint" id="hint">Toca el tablero para empezar. Muévete con las flechas o deslizando.</div>
+<div id="code"></div>
+</div>
+<script>
+/*@CFG*/
+/*@SHARED*/
+(function () {
+  var N = 17, W = djWidth(), cell = Math.floor(W / N), size = cell * N;
+  var canvas = $('c'), ctx = canvas.getContext('2d'), ratio = Math.min(2, window.devicePixelRatio || 1);
+  canvas.width = size * ratio; canvas.height = size * ratio;
+  canvas.style.width = size + 'px'; canvas.style.height = size + 'px';
+  ctx.scale(ratio, ratio);
+
+  var DIRS = [[0, -1], [1, 0], [0, 1], [-1, 0]];
+  var snake, dir, queue, food, score, alive = false, started = false, timer = 0, flash = 0;
+  var apples = 0, plays = 0, bestLocal = 0, deadAt = 0;
+
+  function values() {
+    return [Math.max(DJ.base[0], bestLocal), DJ.base[1] + apples, DJ.base[2] + plays];
+  }
+  var paintStatus = djStatusUi(values, function () { return apples > 0 || plays > 0; });
+
+  function hud() {
+    $('score').textContent = score || 0;
+    $('best').textContent = Math.max(DJ.base[0], bestLocal);
+    $('won').textContent = (apples * CFG.reward).toLocaleString('en-US');
+  }
+
+  function save() { DJ.save(values()); paintStatus(); }
+
+  function placeFood() {
+    for (var tries = 0; tries < 500; tries++) {
+      var f = { x: Math.floor(Math.random() * N), y: Math.floor(Math.random() * N) };
+      if (!snake.some(function (s) { return s.x === f.x && s.y === f.y; })) { food = f; return; }
+    }
+  }
+
+  function reset() {
+    var mid = Math.floor(N / 2);
+    snake = [{ x: mid, y: mid }, { x: mid - 1, y: mid }, { x: mid - 2, y: mid }];
+    dir = 1; queue = []; score = 0; alive = true; started = true; timer = 0;
+    placeFood(); hud();
+    $('hint').textContent = 'Cada manzana vale ' + CFG.reward + ' ' + CFG.coin + '.';
+  }
+
+  // Tras perder hay una pausa breve para no reiniciar con un toque accidental.
+  function restart() { if (!alive && Date.now() - deadAt > 700) reset(); }
+
+  function turn(d) {
+    if (!alive) { restart(); if (!alive) return; }
+    var last = queue.length ? queue[queue.length - 1] : dir;
+    if (d === last || (d + 2) % 4 === last || queue.length > 2) return;
+    queue.push(d);
+  }
+
+  function over() {
+    alive = false; plays++; flash = 1; deadAt = Date.now();
+    $('hint').textContent = 'Fin: ' + score + ' puntos. Toca el tablero para jugar otra vez.';
+    save();
+  }
+
+  function step() {
+    if (queue.length) dir = queue.shift();
+    var head = { x: snake[0].x + DIRS[dir][0], y: snake[0].y + DIRS[dir][1] };
+    if (head.x < 0 || head.y < 0 || head.x >= N || head.y >= N) return over();
+    // La cola se mueve este turno, así que su casilla queda libre.
+    for (var i = 0; i < snake.length - 1; i++) if (snake[i].x === head.x && snake[i].y === head.y) return over();
+    snake.unshift(head);
+    if (head.x === food.x && head.y === food.y) {
+      score++; apples++;
+      if (score > bestLocal) bestLocal = score;
+      placeFood(); hud();
+      if (apples % 5 === 0) save();
+    } else {
+      snake.pop();
+    }
+  }
+
+  function round(x, y, w, h, r) {
+    ctx.beginPath();
+    ctx.moveTo(x + r, y); ctx.arcTo(x + w, y, x + w, y + h, r); ctx.arcTo(x + w, y + h, x, y + h, r);
+    ctx.arcTo(x, y + h, x, y, r); ctx.arcTo(x, y, x + w, y, r); ctx.closePath();
+  }
+
+  function draw() {
+    ctx.fillStyle = '#141b2d'; ctx.fillRect(0, 0, size, size);
+    ctx.fillStyle = '#18213a';
+    for (var y = 0; y < N; y++) for (var x = (y % 2); x < N; x += 2) ctx.fillRect(x * cell, y * cell, cell, cell);
+
+    if (!started) {
+      ctx.fillStyle = '#e8ecf5'; ctx.textAlign = 'center'; ctx.font = 'bold 20px system-ui,sans-serif';
+      ctx.fillText('Toca para empezar', size / 2, size / 2);
+      return;
+    }
+
+    // Manzana.
+    ctx.fillStyle = '#ff5d5d';
+    ctx.beginPath(); ctx.arc(food.x * cell + cell / 2, food.y * cell + cell / 2 + 1, cell * 0.36, 0, 7); ctx.fill();
+    ctx.fillStyle = '#6fdc6f';
+    ctx.fillRect(food.x * cell + cell / 2 - 1, food.y * cell + 2, 3, cell * 0.25);
+
+    // Serpiente.
+    for (var i = snake.length - 1; i >= 0; i--) {
+      var s = snake[i], t = i / Math.max(1, snake.length - 1);
+      ctx.fillStyle = i === 0 ? '#7df59a' : 'rgb(' + Math.round(60 - 20 * t) + ',' + Math.round(200 - 70 * t) + ',' + Math.round(110 - 20 * t) + ')';
+      round(s.x * cell + 1, s.y * cell + 1, cell - 2, cell - 2, cell * 0.3); ctx.fill();
+    }
+    var h = snake[0], ex = DIRS[dir][0], ey = DIRS[dir][1];
+    ctx.fillStyle = '#10261a';
+    ctx.beginPath();
+    ctx.arc(h.x * cell + cell / 2 + ex * cell * 0.18 - ey * cell * 0.2, h.y * cell + cell / 2 + ey * cell * 0.18 - ex * cell * 0.2, cell * 0.09, 0, 7);
+    ctx.arc(h.x * cell + cell / 2 + ex * cell * 0.18 + ey * cell * 0.2, h.y * cell + cell / 2 + ey * cell * 0.18 + ex * cell * 0.2, cell * 0.09, 0, 7);
+    ctx.fill();
+
+    if (!alive) {
+      ctx.fillStyle = 'rgba(10,14,24,' + (0.55 + flash * 0.25) + ')'; ctx.fillRect(0, 0, size, size);
+      ctx.fillStyle = '#fff'; ctx.textAlign = 'center'; ctx.font = 'bold 22px system-ui,sans-serif';
+      ctx.fillText('¡Fin del juego!', size / 2, size / 2 - 10);
+      ctx.font = '15px system-ui,sans-serif';
+      ctx.fillText(score + ' puntos · toca para repetir', size / 2, size / 2 + 16);
+    }
+  }
+
+  djLoop(function (dt) {
+    if (alive) {
+      timer += dt;
+      // Cada manzana acelera un poco el juego.
+      var every = Math.max(0.075, 0.17 - score * 0.003);
+      while (timer >= every && alive) { timer -= every; step(); }
+    }
+    if (flash > 0) flash = Math.max(0, flash - dt * 2);
+    draw();
+  });
+
+  // Controles: flechas, deslizar sobre el tablero y teclado.
+  var buttons = document.querySelectorAll('#pad .btn');
+  for (var b = 0; b < buttons.length; b++) (function (el) {
+    djTap(el, function () { turn(Number(el.getAttribute('data-d'))); });
+  })(buttons[b]);
+
+  var from = null;
+  canvas.addEventListener('touchstart', function (e) { var t = e.touches[0]; from = { x: t.clientX, y: t.clientY }; e.preventDefault(); }, { passive: false });
+  canvas.addEventListener('touchmove', function (e) {
+    e.preventDefault();
+    if (!from) return;
+    var t = e.touches[0], dx = t.clientX - from.x, dy = t.clientY - from.y;
+    if (Math.abs(dx) < 16 && Math.abs(dy) < 16) return;
+    turn(Math.abs(dx) > Math.abs(dy) ? (dx > 0 ? 1 : 3) : (dy > 0 ? 2 : 0));
+    from = { x: t.clientX, y: t.clientY };
+  }, { passive: false });
+  canvas.addEventListener('touchend', function () { if (from) restart(); from = null; });
+  canvas.addEventListener('mousedown', restart);
+  document.addEventListener('keydown', function (e) {
+    var d = { ArrowUp: 0, ArrowRight: 1, ArrowDown: 2, ArrowLeft: 3 }[e.key];
+    if (d !== undefined) { turn(d); e.preventDefault(); }
+  });
+
+  DJ.onState(hud);
+  hud();
+  djFit();
+  DJ.start();
+})();
+</script>

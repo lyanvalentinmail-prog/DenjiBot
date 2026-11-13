@@ -48,6 +48,12 @@ export interface Settings {
     menuBanners: Record<MenuTheme, string>;
     reactions: Reactions;
     clockView: ClockView;
+    /**
+     * Servidores de mensajes (MQTT sobre `wss://`) por los que los juegos HTML
+     * guardan el progreso y se conectan entre sí. Lista vacía = sin conexión:
+     * los juegos se guardan solo con el código de `.canjear`.
+     */
+    gameServers: string[];
     logMode: LogMode;
     autoRestart: boolean;
     activeSession: string;
@@ -109,6 +115,11 @@ export const defaultSettings: Settings = {
         commands: {}
     },
     clockView: 'auto',
+    gameServers: [
+        'wss://broker.emqx.io:8084/mqtt',
+        'wss://broker.hivemq.com:8884/mqtt',
+        'wss://test.mosquitto.org:8081/mqtt'
+    ],
     logMode: 'detallado',
     autoRestart: true,
     activeSession: 'principal'
@@ -204,6 +215,11 @@ export function normalizeSettings(raw: any): Settings {
         menuBanners: normalizeMenuBanners(src.menuBanners),
         reactions: normalizeReactions(src.reactions),
         clockView: CLOCK_VIEWS.includes(src.clockView) ? src.clockView : d.clockView,
+        gameServers: Array.isArray(src.gameServers)
+            ? Array.from(new Set<string>(src.gameServers
+                .filter((url: any) => typeof url === 'string' && /^wss?:\/\/[^\s"'<>]+$/i.test(url.trim()))
+                .map((url: string) => url.trim()))).slice(0, 5)
+            : [...d.gameServers],
         logMode: LOG_MODES.includes(src.logMode) ? src.logMode : d.logMode,
         autoRestart: typeof src.autoRestart === 'boolean' ? src.autoRestart : d.autoRestart,
         activeSession: typeof src.activeSession === 'string' && isValidSessionName(src.activeSession)
