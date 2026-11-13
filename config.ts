@@ -1,5 +1,5 @@
-import { loadSettings, watchSettings, resolveBanner } from './lib/settings.ts';
-import type { Settings, MenuStyle, LogMode } from './lib/settings.ts';
+import { loadSettings, watchSettings, resolveBanner, resolveMenuBanner, defaultSettings } from './lib/settings.ts';
+import type { Settings, MenuStyle, MenuTheme, LogMode, Reactions } from './lib/settings.ts';
 
 /**
  * Configuración de Denji bot.
@@ -18,6 +18,10 @@ export const config = {
     icon: '',
     coin: '',
     menuStyle: 'lista' as MenuStyle,
+    menuTheme: 'denji' as MenuTheme,
+    /** Banner del menú según el estilo activo. */
+    menuBanner: '',
+    reactions: structuredClone(defaultSettings.reactions) as Reactions,
     logMode: 'detallado' as LogMode
 };
 
@@ -27,6 +31,9 @@ function applySettings(s: Settings): void {
     config.prefix = s.prefix;
     config.coin = s.coin;
     config.menuStyle = s.menuStyle;
+    config.menuTheme = s.menuTheme;
+    config.menuBanner = resolveMenuBanner(s);
+    config.reactions = s.reactions;
     config.logMode = s.logMode;
     config.banner = resolveBanner(s.banner);
     config.icon = config.banner;

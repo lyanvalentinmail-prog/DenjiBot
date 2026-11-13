@@ -16,8 +16,22 @@ export const SESSIONS_DIR = path.join(ROOT, 'sessions');
 export const DATABASE_DIR = path.join(ROOT, 'database');
 export const DEFAULT_BANNER = 'assets/banner.jpg';
 
+/** Formato del menú: lista interactiva o todo en un mensaje de texto. */
 export type MenuStyle = 'lista' | 'texto';
+/** Estilo (diseño) del menú. */
+export type MenuTheme = 'denji' | 'chainsaw' | 'simple';
 export type LogMode = 'detallado' | 'compacto' | 'apagado';
+
+/** Momentos en los que el bot reacciona al mensaje de quien usa un comando. */
+export type ReactionEvent = 'wait' | 'done' | 'error' | 'denied' | 'unknown';
+
+export interface Reactions {
+    enabled: boolean;
+    /** Emoji de cada momento; vacío = sin reacción. */
+    events: Record<ReactionEvent, string>;
+    /** Emoji propio de un comando: sustituye al de "listo" cuando ese comando termina. */
+    commands: Record<string, string>;
+}
 
 export interface Settings {
     botName: string;
@@ -27,12 +41,39 @@ export interface Settings {
     owners: string[];
     banner: string;
     menuStyle: MenuStyle;
+    menuTheme: MenuTheme;
+    /** Banner propio de cada estilo de menú; vacío = banner principal. */
+    menuBanners: Record<MenuTheme, string>;
+    reactions: Reactions;
     logMode: LogMode;
     autoRestart: boolean;
     activeSession: string;
 }
 
 export const MENU_STYLES: MenuStyle[] = ['lista', 'texto'];
+export const MENU_THEMES: MenuTheme[] = ['denji', 'chainsaw', 'simple'];
+export const MENU_THEME_NAMES: Record<MenuTheme, string> = {
+    denji: 'Denji style',
+    chainsaw: 'Chainsaw man style',
+    simple: 'Simple style'
+};
+
+export const REACTION_EVENTS: ReactionEvent[] = ['wait', 'done', 'error', 'denied', 'unknown'];
+export const REACTION_EVENT_NAMES: Record<ReactionEvent, string> = {
+    wait: 'Espera / cargando',
+    done: 'Listo',
+    error: 'Error',
+    denied: 'Sin permiso',
+    unknown: 'Comando desconocido'
+};
+export const REACTION_EVENT_HINTS: Record<ReactionEvent, string> = {
+    wait: 'Mientras el bot prepara la respuesta de un comando.',
+    done: 'Cuando el comando termina.',
+    error: 'Cuando el comando falla por un error del bot.',
+    denied: 'Cuando alguien usa un comando que no tiene permitido (solo dueño, solo admins, solo grupos).',
+    unknown: 'Cuando alguien escribe un comando que no existe.'
+};
+export const MAX_COMMAND_REACTIONS = 100;
 export const LOG_MODES: LogMode[] = ['detallado', 'compacto', 'apagado'];
 
 export const defaultSettings: Settings = {
@@ -43,6 +84,13 @@ export const defaultSettings: Settings = {
     owners: [],
     banner: DEFAULT_BANNER,
     menuStyle: 'lista',
+    menuTheme: 'denji',
+    menuBanners: { denji: '', chainsaw: '', simple: '' },
+    reactions: {
+        enabled: true,
+        events: { wait: '🕘', done: '⭐️', error: '', denied: '', unknown: '' },
+        commands: {}
+    },
     logMode: 'detallado',
     autoRestart: true,
     activeSession: 'principal'
@@ -57,6 +105,61 @@ const cleanText = (value: unknown, fallback: string, max: number): string => {
     const text = value.replace(/[\u0000-\u001f\u007f]/g, '').trim().slice(0, max);
     return text || fallback;
 };
+
+const segmenter = new Intl.Segmenter('es', { granularity: 'grapheme' });
+
+/** Devuelve el emoji si el texto es exactamente un emoji (lo que WhatsApp admite como reacción); si no, ''. */
+export function cleanEmoji(value: unknown): string {
+    if (typeof value !== 'string') return '';
+    const text = value.trim();
+    if (!text || text.length > 32) return '';
+    if (Array.from(segmenter.segment(text)).length !== 1) return '';
+    return /\p{Extended_Pictographic}|\p{Regional_Indicator}|\u20e3/u.test(text) ? text : '';
+}
+
+/** Nombre de comando normalizado (sin prefijo, minúsculas); '' si no es válido. */
+export function cleanCommandName(value: unknown): string {
+    if (typeof value !== 'string') return '';
+    const name = value.trim().toLowerCase().replace(/^[^\p{L}\p{N}]+/u, '');
+    return /^[\p{L}\p{N}_-]{1,32}$/u.test(name) ? name : '';
+}
+
+function normalizeReactions(raw: any): Reactions {
+    const src = raw && typeof raw === 'object' ? raw : {};
+    const d = defaultSettings.reactions;
+
+    const events = { ...d.events };
+    if (src.events && typeof src.events === 'object') {
+        for (const event of REACTION_EVENTS) {
+            const value = src.events[event];
+            // Un texto vacío es válido: significa "sin reacción".
+            if (value === '') events[event] = '';
+            else if (value !== undefined) events[event] = cleanEmoji(value) || d.events[event];
+        }
+    }
+
+    const commands: Record<string, string> = {};
+    if (src.commands && typeof src.commands === 'object') {
+        for (const [key, value] of Object.entries(src.commands)) {
+            const name = cleanCommandName(key);
+            const emoji = cleanEmoji(value);
+            if (name && emoji && Object.keys(commands).length < MAX_COMMAND_REACTIONS) commands[name] = emoji;
+        }
+    }
+
+    return {
+        enabled: typeof src.enabled === 'boolean' ? src.enabled : d.enabled,
+        events,
+        commands
+    };
+}
+
+function normalizeMenuBanners(raw: any): Record<MenuTheme, string> {
+    const src = raw && typeof raw === 'object' ? raw : {};
+    const out = { ...defaultSettings.menuBanners };
+    for (const theme of MENU_THEMES) out[theme] = cleanText(src[theme], '', 500);
+    return out;
+}
 
 /** Devuelve siempre un objeto de ajustes completo y válido. */
 export function normalizeSettings(raw: any): Settings {
@@ -79,6 +182,9 @@ export function normalizeSettings(raw: any): Settings {
         owners,
         banner: cleanText(src.banner, d.banner, 500),
         menuStyle: MENU_STYLES.includes(src.menuStyle) ? src.menuStyle : d.menuStyle,
+        menuTheme: MENU_THEMES.includes(src.menuTheme) ? src.menuTheme : d.menuTheme,
+        menuBanners: normalizeMenuBanners(src.menuBanners),
+        reactions: normalizeReactions(src.reactions),
         logMode: LOG_MODES.includes(src.logMode) ? src.logMode : d.logMode,
         autoRestart: typeof src.autoRestart === 'boolean' ? src.autoRestart : d.autoRestart,
         activeSession: typeof src.activeSession === 'string' && isValidSessionName(src.activeSession)
@@ -125,6 +231,11 @@ export function resolveBanner(banner: string): string {
     const abs = path.isAbsolute(banner) ? banner : path.join(ROOT, banner);
     if (fs.existsSync(abs)) return abs;
     return path.join(ROOT, DEFAULT_BANNER);
+}
+
+/** Banner del menú para un estilo: el propio del estilo o, si no tiene, el principal. */
+export function resolveMenuBanner(settings: Settings, theme: MenuTheme = settings.menuTheme): string {
+    return resolveBanner(settings.menuBanners[theme] || settings.banner);
 }
 
 /** Observa `settings.json` y avisa cuando cambia (lo usa el proceso del bot). */
