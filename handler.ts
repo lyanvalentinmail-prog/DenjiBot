@@ -5,6 +5,7 @@ import chalk from 'chalk';
 import { broadcast } from '#index';
 import { LRUCache } from 'lru-cache';
 import * as linkify from 'linkifyjs';
+import { collectPackMedia, isLoosePhoto } from './lib/stickerpack.ts';
 
 const handlerConfig = (config as any)?.handler || {};
 const metaTtlMs = handlerConfig.metaTtl || 300000;
@@ -180,7 +181,10 @@ export const handler = async (sock: any, rawMsg: any): Promise<any> => {
     const normalizedSender = normalizeNumber(realJidResult);
     const normalizedMsgSender = normalizeNumber(msgSender);
 
-    if (checkRateLimit(normalizedSender)) return;
+    // Las fotos sin comando no cuentan para el límite de mensajes: un álbum llega
+    // de golpe y sus fotos pueden ser para un pack de stickers (.spack).
+    const loosePhoto = isLoosePhoto(rawMsg, (config as any)?.prefix || '.');
+    if (!loosePhoto && checkRateLimit(normalizedSender)) return;
 
     const altSender = normalizedSender.startsWith('521') 
         ? normalizedSender.replace(/^521/, '52') 
@@ -267,6 +271,8 @@ export const handler = async (sock: any, rawMsg: any): Promise<any> => {
             }
         }
     }
+
+    if (!isCommand) collectPackMedia(sock, msg);
 
     if (!isCommand || !msg.body) return;
 
