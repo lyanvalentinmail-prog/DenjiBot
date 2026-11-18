@@ -3,11 +3,8 @@ import type { MenuTheme } from './settings.ts';
 /*
  * Estilos del menú (Yuki, Denji, Chainsaw man y Simple).
  *
- * Diseñados para ser ligeros, legibles en móvil y sin exceso de texto:
- *   - Cabeceras breves con solo los datos útiles.
- *   - Un comando por línea (sin repetir 4-5 alias en cada fila).
- *   - Vista de resumen por categorías, vista de una sola categoría,
- *     menú completo plegado con "Leer más" y ficha de un comando concreto.
+ * Cada comando muestra su nombre arriba y su descripción debajo como cita de
+ * WhatsApp (`> Descripción`), sin amontonar alias ni texto en una sola línea.
  *
  * No depende de WhatsApp: lo usan tanto `commands/main/help.js` como el panel
  * de `npm start` ("Personalizar bot › Estilo del menú").
@@ -77,21 +74,27 @@ export const READ_MORE = String.fromCharCode(8206).repeat(4000);
 
 const catCount = (c: MenuCategory): number => c.count ?? c.commands.length;
 
-function formatCmdLine(
+const formatGreet = (d: MenuData): string =>
+    d.userTag ? `*@${d.userTag.replace(/^@+/, '')}*` : `*${d.user}*`;
+
+/**
+ * Formatea un comando con su descripción justo debajo usando cita de WhatsApp:
+ *   .sticker
+ *   > Convierte una imagen o video a sticker
+ */
+function formatCmdBlock(
     bullet: string,
-    sep: string,
     item: MenuCommand,
     prefix: string,
     detailed: boolean
 ): string {
     const main = `*${prefix}${item.cmd[0]}*`;
-    // En vista de categoría mostramos como máximo 1 alias corto; en menú completo solo el principal.
     const alt = detailed && item.cmd[1] && item.cmd[1].length <= 8
         ? ` · _${prefix}${item.cmd[1]}_`
         : '';
     const usage = item.usage ? ` _${item.usage}_` : '';
-    const desc = item.desc ? `${sep}${item.desc}` : '';
-    return `${bullet}${main}${alt}${usage}${desc}\n`;
+    const descLine = item.desc ? `\n> ${item.desc}` : '';
+    return `${bullet}${main}${alt}${usage}${descLine}\n`;
 }
 
 function formatGroups(
@@ -104,9 +107,9 @@ function formatGroups(
     let out = '';
     for (const g of groups) {
         const list = g.items.map(name => `\`${prefix}${name}\``).join(' · ');
-        out += `${bullet}*${g.title}:* ${list}\n`;
+        out += `${bullet}*${g.title}*\n> ${list}\n`;
     }
-    if (note) out += `> _${note}_\n`;
+    if (note) out += `\n> _${note}_\n`;
     return out;
 }
 
@@ -132,10 +135,9 @@ const STYLES: Record<MenuTheme, StyleDef> = {
         rowTitle: c => `${c.emoji} ${c.label}`,
         fullRowTitle: 'ꕤ Menú completo',
         header: d => {
-            const greet = d.userTag ? `*@${d.userTag}*` : `*${d.user}*`;
             const when = [d.date, d.time].filter(Boolean).join(', ');
             return (
-                `> 𖧧 ¡Hola! ${greet}, soy *${d.shortName || d.botName}* *(˶ᵔ ᵕ ᵔ˶)*\n\n` +
+                `> 𖧧 ¡Hola! ${formatGreet(d)}, soy *${d.shortName || d.botName}* *(˶ᵔ ᵕ ᵔ˶)*\n\n` +
                 `╭┈ࠢ͜┅╾─ׄ─֟─ׄ─┅ࠡ͜┈۰۰\n` +
                 `│✿ *ᴅᴇᴠᴇʟᴏᴘᴇʀ ::* ${d.devName || 'Oculto'}\n` +
                 `│ꕥ *ᴛʏᴘᴇ ::* ${d.botType || 'Principal'}\n` +
@@ -148,35 +150,34 @@ const STYLES: Record<MenuTheme, StyleDef> = {
             );
         },
         index: (categories, d) => {
-            let text = `\n\n╭┈─ׄ֟፝─╴𐔌 *CATEGORÍAS* 𐦯╶─ׄ֟፝─\n`;
+            let text = `\n\n╭┈─ׄ֟፝─╴𐔌 *CATEGORÍAS* 𐦯╶─ׄ֟፝─\n\n`;
             for (const c of categories) {
-                text += `ꕤ *${d.prefix}menu ${c.id}* › ${c.label} _(${catCount(c)})_\n`;
+                text += `ꕤ *${d.prefix}menu ${c.id}* _(${catCount(c)})_\n> ${c.subtitle || c.label}\n`;
             }
-            text += `╰─ׄ֟፝────═̶፝֟͜═̶────ׄ֟፝─╯\n`;
+            text += `\n╰─ׄ֟፝────═̶፝֟͜═̶────ׄ֟፝─╯\n`;
             text += `> ✿ Ver todo: *${d.prefix}allmenu* · Detalle: *${d.prefix}menu <cmd>*`;
             return text;
         },
         categoryHeader: (c, d) =>
             `> 𖧧 *${d.shortName || d.botName}* · Sección \`${c.label}\` _(${catCount(c)} comandos)_\n`,
         category: (c, d, detailed) => {
-            let text = `\n╭┈─ׄ֟፝─╴𐔌 *${c.name.toUpperCase()}* 𐦯╶─ׄ֟፝─\n`;
-            if (detailed && c.subtitle) text += `> ✐ ${c.subtitle}\n`;
+            let text = `\n╭┈─ׄ֟፝─╴𐔌 *${c.label.toUpperCase()}* 𐦯╶─ׄ֟፝─\n\n`;
             for (const item of c.commands) {
-                text += formatCmdLine('ꕤ ', ' › ', item, d.prefix, detailed);
+                text += formatCmdBlock('ꕤ ', item, d.prefix, detailed);
             }
             text += formatGroups('❀ ', c.groups, c.groupsNote, d.prefix);
-            return text + `╰─ׄ֟፝────═̶፝֟͜═̶────ׄ֟፝─╯\n`;
+            return text + `\n╰─ׄ֟፝────═̶፝֟͜═̶────ׄ֟፝─╯\n`;
         },
         commandDetail: (item, d) => {
             const aliases = item.cmd.slice(1).map(a => `\`${d.prefix}${a}\``).join(', ');
             const usage = item.usage ? ` ${item.usage}` : '';
             return (
-                `╭┈─ׄ֟፝─╴𐔌 *${item.cmd[0].toUpperCase()}* 𐦯╶─ׄ֟፝─\n` +
-                `│✿ *Uso ::* \`${d.prefix}${item.cmd[0]}${usage}\`\n` +
+                `╭┈─ׄ֟፝─╴𐔌 *${item.cmd[0].toUpperCase()}* 𐦯╶─ׄ֟፝─\n\n` +
+                `ꕤ *${d.prefix}${item.cmd[0]}*${usage ? ` _${usage.trim()}_` : ''}\n` +
+                `> ${item.desc || 'Sin descripción'}\n\n` +
                 (aliases ? `│ꕥ *Alias ::* ${aliases}\n` : '') +
                 `│❀ *Sección ::* ${item.categoryLabel}\n` +
                 (item.admin ? `│⚘ *Permiso ::* Administrador\n` : '') +
-                `│○ *Info ::* ${item.desc || 'Sin descripción'}\n` +
                 `╰─ׄ֟፝────═̶፝֟͜═̶────ׄ֟፝─╯`
             );
         },
@@ -198,20 +199,16 @@ const STYLES: Record<MenuTheme, StyleDef> = {
         sectionTitle: 'Categorías',
         rowTitle: c => `${c.emoji} ${c.label}`,
         fullRowTitle: '📋 Menú completo',
-        header: d => {
-            const greet = d.userTag ? `*@${d.userTag}*` : `*${d.user}*`;
-            return (
-                `「 ꕤ 」 ¡Hola, ${greet}! Soy *${d.botName}* 𝜗ৎ\n\n` +
-                `ׅ  ׄ  ✿ *Dev* » ${d.devName}\n` +
-                `ׅ  ׄ  ✿ *Moneda* » ${d.coin}\n` +
-                `ׅ  ׄ  ✿ *Comandos* » ${d.total} · *Prefijo* » \`${d.prefix}\`\n` +
-                `ׅ  ׄ  ✿ *Perfil* » *${d.prefix}perfil* · *Sub-Bot* » *${d.prefix}code*`
-            );
-        },
+        header: d =>
+            `「 ꕤ 」 ¡Hola, ${formatGreet(d)}! Soy *${d.botName}* 𝜗ৎ\n\n` +
+            `ׅ  ׄ  ✿ *Dev* » ${d.devName}\n` +
+            `ׅ  ׄ  ✿ *Moneda* » ${d.coin}\n` +
+            `ׅ  ׄ  ✿ *Comandos* » ${d.total} · *Prefijo* » \`${d.prefix}\`\n` +
+            `ׅ  ׄ  ✿ *Perfil* » *${d.prefix}perfil* · *Sub-Bot* » *${d.prefix}code*`,
         index: (categories, d) => {
-            let text = `\n\n☕︎  ﹙ *\`CATEGORÍAS\`* ﹚  ✿\n`;
+            let text = `\n\n☕︎  ﹙ *\`CATEGORÍAS\`* ﹚  ✿\n\n`;
             for (const c of categories) {
-                text += `❀ ${c.emoji} *${d.prefix}menu ${c.id}* › ${c.label} _(${catCount(c)})_\n`;
+                text += `❀ ${c.emoji} *${d.prefix}menu ${c.id}* _(${catCount(c)})_\n> ${c.subtitle || c.label}\n`;
             }
             text += `\n> ✿ Todo: *${d.prefix}allmenu* · Detalle: *${d.prefix}menu <cmd>*`;
             return text;
@@ -219,24 +216,22 @@ const STYLES: Record<MenuTheme, StyleDef> = {
         categoryHeader: (c, d) =>
             `「 ꕤ 」 *${d.botName}* › *${c.label}* _(${catCount(c)})_\n`,
         category: (c, d, detailed) => {
-            let text = `\n☕︎  ﹙ *\`${c.name.toUpperCase()}\`* ﹚  ${c.emoji}\n`;
-            if (detailed && c.subtitle) text += `> ${c.subtitle}\n`;
+            let text = `\n☕︎  ﹙ *\`${c.label.toUpperCase()}\`* ﹚  ${c.emoji}\n\n`;
             for (const item of c.commands) {
-                text += formatCmdLine('❀ ', ' — ', item, d.prefix, detailed);
+                text += formatCmdBlock('❀ ', item, d.prefix, detailed);
             }
             text += formatGroups('✿ ', c.groups, c.groupsNote, d.prefix);
             return text;
         },
         commandDetail: (item, d) => {
             const aliases = item.cmd.slice(1).map(a => `\`${d.prefix}${a}\``).join(', ');
-            const usage = item.usage ? ` ${item.usage}` : '';
+            const usage = item.usage ? ` _${item.usage}_` : '';
             return (
-                `「 ꕤ 」 Comando *${d.prefix}${item.cmd[0]}*\n\n` +
-                `ׅ  ׄ  ✿ *Uso* » \`${d.prefix}${item.cmd[0]}${usage}\`\n` +
+                `「 ꕤ 」 *${d.prefix}${item.cmd[0]}*${usage}\n` +
+                `> ${item.desc || 'Sin descripción'}\n\n` +
                 (aliases ? `ׅ  ׄ  ✿ *Alias* » ${aliases}\n` : '') +
-                `ׅ  ׄ  ✿ *Categoría* » ${item.categoryLabel}\n` +
-                (item.admin ? `ׅ  ׄ  ✿ *Permiso* » Administrador\n` : '') +
-                `ׅ  ׄ  ✿ *Descripción* » ${item.desc || 'Sin descripción'}`
+                `ׅ  ׄ  ✿ *Categoría* » ${item.categoryLabel}` +
+                (item.admin ? `\nׅ  ׄ  ✿ *Permiso* » Administrador` : '')
             );
         },
         footer: (d, single) =>
@@ -258,49 +253,44 @@ const STYLES: Record<MenuTheme, StyleDef> = {
         sectionTitle: 'Categorías',
         rowTitle: c => `⛓️ ${c.label}`,
         fullRowTitle: '🪚 Menú completo',
-        header: d => {
-            const greet = d.userTag ? `*@${d.userTag}*` : `*${d.user}*`;
-            return (
-                `🪚 *${d.botName.toUpperCase()}* ⛓️\n` +
-                `🩸 ¡Vrrrm, ${greet}!\n\n` +
-                `┏━━〔 *INFO* 〕\n` +
-                `┃ ⛓️ *Dev* » ${d.devName}\n` +
-                `┃ ⛓️ *Moneda* » ${d.coin}\n` +
-                `┃ ⛓️ *Comandos* » ${d.total} · *Prefijo* » \`${d.prefix}\`\n` +
-                `┗━━━━━━━━━━━⛓️`
-            );
-        },
+        header: d =>
+            `🪚 *${d.botName.toUpperCase()}* ⛓️\n` +
+            `🩸 ¡Vrrrm, ${formatGreet(d)}!\n\n` +
+            `┏━━〔 *INFO* 〕\n` +
+            `┃ ⛓️ *Dev* » ${d.devName}\n` +
+            `┃ ⛓️ *Moneda* » ${d.coin}\n` +
+            `┃ ⛓️ *Comandos* » ${d.total} · *Prefijo* » \`${d.prefix}\`\n` +
+            `┗━━━━━━━━━━━⛓️`,
         index: (categories, d) => {
-            let text = `\n\n┏━━〔 🪚 *CATEGORÍAS* 〕\n`;
+            let text = `\n\n━━〔 🪚 *CATEGORÍAS* 〕━━\n\n`;
             for (const c of categories) {
-                text += `┃ 🩸 *${d.prefix}menu ${c.id}* › ${c.label} _(${catCount(c)})_\n`;
+                text += `🩸 *${d.prefix}menu ${c.id}* _(${catCount(c)})_\n> ${c.subtitle || c.label}\n`;
             }
-            text += `┗━━━━━━━━━━━⛓️\n`;
+            text += `\n━━━━━━━━━━━━⛓️\n`;
             text += `> 🪚 Todo: *${d.prefix}allmenu* · Detalle: *${d.prefix}menu <cmd>*`;
             return text;
         },
         categoryHeader: (c, d) =>
             `🪚 *${d.botName}* · *${c.label}* _(${catCount(c)})_\n`,
         category: (c, d, detailed) => {
-            let text = `\n┏━━〔 🪚 *${c.name.toUpperCase()}* 〕\n`;
-            if (detailed && c.subtitle) text += `┃ _${c.subtitle}_\n`;
+            let text = `\n━━〔 🪚 *${c.label.toUpperCase()}* 〕━━\n\n`;
             for (const item of c.commands) {
-                text += formatCmdLine('┃ 🩸 ', ' — ', item, d.prefix, detailed);
+                text += formatCmdBlock('🩸 ', item, d.prefix, detailed);
             }
-            text += formatGroups('┃ ⛓️ ', c.groups, c.groupsNote, d.prefix);
-            return text + `┗━━━━━━━━━━━⛓️\n`;
+            text += formatGroups('⛓️ ', c.groups, c.groupsNote, d.prefix);
+            return text + `\n━━━━━━━━━━━━⛓️\n`;
         },
         commandDetail: (item, d) => {
             const aliases = item.cmd.slice(1).map(a => `\`${d.prefix}${a}\``).join(', ');
-            const usage = item.usage ? ` ${item.usage}` : '';
+            const usage = item.usage ? ` _${item.usage}_` : '';
             return (
-                `┏━━〔 🪚 *${item.cmd[0].toUpperCase()}* 〕\n` +
-                `┃ 🩸 *Uso* » \`${d.prefix}${item.cmd[0]}${usage}\`\n` +
-                (aliases ? `┃ ⛓️ *Alias* » ${aliases}\n` : '') +
-                `┃ ⛓️ *Sección* » ${item.categoryLabel}\n` +
-                (item.admin ? `┃ ⛓️ *Permiso* » Admin\n` : '') +
-                `┃ ⛓️ *Info* » ${item.desc || 'Sin descripción'}\n` +
-                `┗━━━━━━━━━━━⛓️`
+                `━━〔 🪚 *${item.cmd[0].toUpperCase()}* 〕━━\n\n` +
+                `🩸 *${d.prefix}${item.cmd[0]}*${usage}\n` +
+                `> ${item.desc || 'Sin descripción'}\n\n` +
+                (aliases ? `⛓️ *Alias* » ${aliases}\n` : '') +
+                `⛓️ *Sección* » ${item.categoryLabel}\n` +
+                (item.admin ? `⛓️ *Permiso* » Admin\n` : '') +
+                `━━━━━━━━━━━━⛓️`
             );
         },
         footer: (d, single) =>
@@ -315,53 +305,48 @@ const STYLES: Record<MenuTheme, StyleDef> = {
             `*${d.botName}* — Hola, *${d.user}*\n\n` +
             `Dev: ${d.devName} · Moneda: ${d.coin}\n` +
             `Comandos: ${d.total} · Prefijo: \`${d.prefix}\`\n\n` +
-            `Elige una categoría o escribe *${d.prefix}allmenu*.`,
+            `> Elige una categoría o escribe *${d.prefix}allmenu*`,
         buttonText: 'Categorías',
         sectionTitle: 'Categorías',
         rowTitle: c => c.label,
         fullRowTitle: 'Menú completo',
-        header: d => {
-            const greet = d.userTag ? `*@${d.userTag}*` : `*${d.user}*`;
-            return (
-                `*${d.botName}* — Hola, ${greet}\n` +
-                `Dev: ${d.devName} · Moneda: ${d.coin}\n` +
-                `Comandos: ${d.total} · Prefijo: \`${d.prefix}\``
-            );
-        },
+        header: d =>
+            `*${d.botName}* — Hola, ${formatGreet(d)}\n` +
+            `Dev: ${d.devName} · Moneda: ${d.coin}\n` +
+            `Comandos: ${d.total} · Prefijo: \`${d.prefix}\``,
         index: (categories, d) => {
-            let text = `\n\n*CATEGORÍAS*\n`;
+            let text = `\n\n*CATEGORÍAS*\n\n`;
             for (const c of categories) {
-                text += `• *${d.prefix}menu ${c.id}* — ${c.label} (${catCount(c)})\n`;
+                text += `*${d.prefix}menu ${c.id}* _(${catCount(c)})_\n> ${c.subtitle || c.label}\n`;
             }
-            text += `\nTodo: *${d.prefix}allmenu* · Ayuda: *${d.prefix}menu <cmd>*`;
+            text += `\n> Todo: *${d.prefix}allmenu* · Ayuda: *${d.prefix}menu <cmd>*`;
             return text;
         },
         categoryHeader: (c, d) =>
             `*${d.botName}* · *${c.label}* (${catCount(c)})\n`,
         category: (c, d, detailed) => {
-            let text = `\n*${c.label.toUpperCase()}*\n`;
-            if (detailed && c.subtitle) text += `_${c.subtitle}_\n`;
+            let text = `\n*${c.label.toUpperCase()}*\n\n`;
             for (const item of c.commands) {
-                text += formatCmdLine('• ', ' — ', item, d.prefix, detailed);
+                text += formatCmdBlock('', item, d.prefix, detailed);
             }
-            text += formatGroups('• ', c.groups, c.groupsNote, d.prefix);
+            text += formatGroups('', c.groups, c.groupsNote, d.prefix);
             return text;
         },
         commandDetail: (item, d) => {
             const aliases = item.cmd.slice(1).map(a => `\`${d.prefix}${a}\``).join(', ');
-            const usage = item.usage ? ` ${item.usage}` : '';
+            const usage = item.usage ? ` _${item.usage}_` : '';
             return (
-                `*${d.prefix}${item.cmd[0]}* (${item.categoryLabel})\n` +
-                `${item.desc || 'Sin descripción'}\n` +
-                `Uso: \`${d.prefix}${item.cmd[0]}${usage}\`` +
+                `*${d.prefix}${item.cmd[0]}*${usage}\n` +
+                `> ${item.desc || 'Sin descripción'}\n\n` +
+                `Categoría: ${item.categoryLabel}` +
                 (aliases ? `\nAlias: ${aliases}` : '') +
                 (item.admin ? `\nRequiere: administrador` : '')
             );
         },
         footer: (d, single) =>
             single
-                ? `\nAyuda: *${d.prefix}menu <cmd>* · Volver: *${d.prefix}menu*`
-                : `\n${d.botName} · ${d.devName}`
+                ? `\n> Ayuda: *${d.prefix}menu <cmd>* · Volver: *${d.prefix}menu*`
+                : `\n> ${d.botName} · ${d.devName}`
     }
 };
 
@@ -428,8 +413,8 @@ export function sampleMenu(theme: MenuTheme, d: MenuData): string {
             subtitle: 'Música, videos y archivos.',
             emoji: '📥',
             commands: [
-                { cmd: ['play', 'ytmp3'], desc: 'Audio de YouTube', usage: '<texto|url>' },
-                { cmd: ['tiktok', 'tt'], desc: 'Video de TikTok', usage: '<url>' }
+                { cmd: ['play', 'ytmp3'], desc: 'Descarga audio de YouTube', usage: '<texto|url>' },
+                { cmd: ['tiktok', 'tt'], desc: 'Descarga video de TikTok', usage: '<url>' }
             ]
         },
         {
@@ -439,8 +424,8 @@ export function sampleMenu(theme: MenuTheme, d: MenuData): string {
             subtitle: 'Crear y gestionar stickers.',
             emoji: '✨',
             commands: [
-                { cmd: ['sticker', 's'], desc: 'Imagen o video a sticker', usage: '' },
-                { cmd: ['qc'], desc: 'Sticker de cita con texto', usage: '<texto>' }
+                { cmd: ['sticker', 's'], desc: 'Convierte una foto o video a sticker', usage: '' },
+                { cmd: ['qc'], desc: 'Crea un sticker de cita con texto', usage: '<texto>' }
             ]
         }
     ]).replace(READ_MORE, '');
