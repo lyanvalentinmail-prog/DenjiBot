@@ -1302,12 +1302,12 @@ async function runPanel(): Promise<void> {
         while (true) {
             const s = loadSettings();
             const bannerOf = (theme: MenuTheme): string => s.menuBanners[theme] || 'banner principal';
-            const options: { label: string; hint: string; value: Choice; key: string }[] = [
+            const options: { label: string; hint: string; value: Choice; key?: string }[] = [
                 ...MENU_THEMES.map((theme, i) => ({
                     label: MENU_THEME_NAMES[theme],
                     hint: [s.menuTheme === theme ? '● en uso' : '', s.menuBanners[theme] ? 'banner propio' : ''].filter(Boolean).join(' · '),
                     value: theme as Choice,
-                    key: String(i + 1)
+                    key: i < 9 ? String(i + 1) : undefined
                 })),
                 { label: 'Banner de cada estilo', hint: 'Imagen del menú', value: 'banners', key: 'b' },
                 { label: 'Volver', hint: '', value: 'back', key: '0' }
@@ -1348,7 +1348,12 @@ async function runPanel(): Promise<void> {
                         ' ' + c.dim('Banner principal: ') + c.white(s.banner)
                     ],
                     options: [
-                        ...MENU_THEMES.map((item, i) => ({ label: MENU_THEME_NAMES[item], hint: bannerOf(item), value: item as MenuTheme | null, key: String(i + 1) })),
+                        ...MENU_THEMES.map((item, i) => ({
+                            label: MENU_THEME_NAMES[item],
+                            hint: bannerOf(item),
+                            value: item as MenuTheme | null,
+                            key: i < 9 ? String(i + 1) : undefined
+                        })),
                         { label: 'Volver', value: null, key: '0' }
                     ],
                     initial: Math.max(0, MENU_THEMES.indexOf(s.menuTheme)),

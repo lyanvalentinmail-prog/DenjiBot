@@ -26,28 +26,28 @@ const CATEGORIES = [
     id: 'downloads',
     label: 'Descargas',
     emoji: '📥',
-    subtitle: 'YouTube, TikTok, IG, APK e imágenes',
+    subtitle: 'YouTube, Spotify, TikTok, IG, Threads y más',
     aliases: ['downloads', 'download', 'descargas', 'descarga', 'dl']
   },
   {
     id: 'stickers',
     label: 'Stickers',
     emoji: '✨',
-    subtitle: 'Stickers, brat, QC y paquetes',
+    subtitle: 'Stickers, WM, meme, TTP, brat, QC y packs',
     aliases: ['stickers', 'stikers', 'packs']
   },
   {
     id: 'utils',
     label: 'Utilidades',
     emoji: '⚙️',
-    subtitle: 'ChatGPT, HD, traductor y herramientas',
+    subtitle: 'IA, HD bigger.pics, sin fondo, Shazam, OCR y más',
     aliases: ['utils', 'util', 'utilidades', 'herramientas', 'tools']
   },
   {
     id: 'anime',
     label: 'Anime',
     emoji: '🌸',
-    subtitle: 'Waifu, neko, ppcouple y 66 reacciones',
+    subtitle: 'Waifu, neko, whatanime, ppcouple y 66 reacciones',
     aliases: ['anime', 'reacciones', 'reaccion', 'reactions', 'interaccion']
   },
   {
@@ -127,6 +127,9 @@ const USAGE_HINTS = {
   play: '<búsqueda|url>',
   play2: '<búsqueda|url>',
   ytsearch: '<búsqueda>',
+  spotify: '<canción|url>',
+  soundcloud: '<canción|url>',
+  threads: '<enlace>',
   tiktok: '<url|texto>',
   ig: '<enlace>',
   fb: '<enlace>',
@@ -138,6 +141,10 @@ const USAGE_HINTS = {
   gdrive: '<enlace>',
   // stickers
   sticker: '[img|video]',
+  wm: '[pack | autor]',
+  smeme: '<arriba | abajo>',
+  ttp: '<texto>',
+  attp: '<texto>',
   brat: '<texto>',
   bratv: '<texto>',
   qc: '<texto>',
@@ -155,7 +162,25 @@ const USAGE_HINTS = {
   setmeta: '<pack | autor>',
   // utils
   ia: '<pregunta>',
-  hd: '(cita imagen)',
+  hd: '[4x|anime|deblur|web]',
+  removebg: '[sticker]',
+  tomp3: '(cita video/audio)',
+  toptt: '(cita video/audio)',
+  shazam: '(cita audio/video)',
+  lyrics: '<canción>',
+  wikipedia: '<búsqueda>',
+  clima: '<ciudad>',
+  qrcode: '<texto|url>',
+  ssweb: '<url>',
+  calc: '<operación>',
+  styletext: '<texto>',
+  acortar: '<url>',
+  ocr: '(cita imagen)',
+  voz: '[idioma] <texto>',
+  readmore: '<visible | oculto>',
+  base64: '[dec] <texto>',
+  morse: '<texto|código>',
+  binario: '<texto|bits>',
   translate: '<idioma> <texto>',
   say: '<texto>',
   toimg: '(cita sticker)',
@@ -166,6 +191,7 @@ const USAGE_HINTS = {
   gitclone: '<url repo>',
   // anime
   hug: '[@usuario]',
+  whatanime: '(cita imagen)',
   // gacha
   claim: '(cita roll)',
   charinfo: '<personaje>',
@@ -191,6 +217,8 @@ const USAGE_HINTS = {
   rt: '<color> <cantidad>',
   cf: '<cara|cruz> <cant>',
   ppt: '<piedra|papel|tijera>',
+  ttt: '[@usuario]',
+  ahorcado: '',
   math: '[dificultad]',
   shop: '[objeto]',
   // profile
@@ -203,6 +231,11 @@ const USAGE_HINTS = {
   sethobby: '<hobby>',
   // group
   bot: '<on|off>',
+  del: '(cita mensaje)',
+  admins: '[motivo]',
+  encuesta: '<preg | op1 | op2>',
+  mute: '@usuario',
+  unmute: '@usuario',
   kick: '@usuario',
   promote: '@usuario',
   demote: '@usuario',
@@ -349,6 +382,59 @@ function buildCatalog(usedPrefix) {
       continue;
     }
 
+    // 5) Efectos de audio agrupados con limpieza.
+    if (normKey.endsWith('utils/audiofx')) {
+      const fxList = aliases.filter(a => a !== 'audiofx');
+      bucket.groups = [
+        ...(bucket.groups || []),
+        { title: 'Efectos de audio', items: fxList }
+      ];
+      bucket.groupsNote = `Responde a un audio o nota de voz con el efecto (ej.: ${usedPrefix}nightcore, ${usedPrefix}bass)`;
+      bucket.count += fxList.length;
+      continue;
+    }
+
+    // 6) ttp y attp separados con claridad.
+    if (normKey.endsWith('stickers/ttp')) {
+      bucket.commands.push(
+        { cmd: ['ttp'], usage: '<texto>', desc: 'Sticker de texto con fondo transparente' },
+        { cmd: ['attp'], usage: '<texto>', desc: 'Sticker de texto animado arcoíris' }
+      );
+      bucket.count += 2;
+      continue;
+    }
+
+    // 7) tomp3 y toptt claros.
+    if (normKey.endsWith('utils/tomp3')) {
+      bucket.commands.push(
+        { cmd: ['tomp3', 'toaudio'], usage: '(cita video)', desc: 'Convertir video o audio a MP3' },
+        { cmd: ['toptt', 'tovn'], usage: '(cita audio)', desc: 'Convertir audio o video en nota de voz' }
+      );
+      bucket.count += 2;
+      continue;
+    }
+
+    // 8) base64, morse y binario separados con claridad.
+    if (normKey.endsWith('utils/base64')) {
+      bucket.commands.push(
+        { cmd: ['base64'], usage: '[dec] <texto>', desc: 'Codificar o decodificar texto en Base64' },
+        { cmd: ['morse'], usage: '<texto|código>', desc: 'Convertir entre texto y código Morse' },
+        { cmd: ['binario'], usage: '<texto|bits>', desc: 'Convertir entre texto y código binario' }
+      );
+      bucket.count += 3;
+      continue;
+    }
+
+    // 9) mute y unmute separados con claridad.
+    if (normKey.endsWith('group/mute')) {
+      bucket.commands.push(
+        { cmd: ['mute', 'silenciar'], usage: '@usuario', desc: 'Silenciar a un miembro del grupo', admin: true },
+        { cmd: ['unmute', 'desilenciar'], usage: '@usuario', desc: 'Quitar silencio a un miembro', admin: true }
+      );
+      bucket.count += 2;
+      continue;
+    }
+
     const first = aliases[0];
     const pref = PREFERRED_NAME[first];
     const main = pref && aliases.includes(pref) ? pref : first;
@@ -388,16 +474,20 @@ function collapseGroupsForFullMenu(categories, prefix) {
   return categories.map(cat => {
     if (!cat.groups?.length) return cat;
     const totalR = cat.groups.reduce((n, g) => n + g.items.length, 0);
-    return {
-      ...cat,
-      commands: [
-        ...cat.commands,
-        {
+    const summaryItem = cat.id === 'utils'
+      ? {
+          cmd: ['nightcore', 'bass'],
+          usage: '(cita audio)',
+          desc: `+${totalR - 1} efectos de audio (ver ${prefix}menu utils)`
+        }
+      : {
           cmd: ['hug', 'kiss'],
           usage: '[@user]',
           desc: `+${totalR - 1} reacciones (ver ${prefix}menu anime)`
-        }
-      ],
+        };
+    return {
+      ...cat,
+      commands: [...cat.commands, summaryItem],
       groups: undefined,
       groupsNote: undefined
     };

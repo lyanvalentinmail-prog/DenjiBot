@@ -258,14 +258,15 @@ export function inspectBotData(root: string = ROOT): BotDataSummary {
     const settingsExists = fs.existsSync(settingsFile);
     const settingsBytes = statSize(settingsFile);
 
-    // 5. Temporales y logs
+    // 5. Temporales, caché y logs
     const tmpUsage = dirUsage(tmpDir);
     const logsUsage = dirUsage(logsDir);
+    const cacheUsage = dirUsage(path.join(absRoot, '.cache'));
     const rootLogs = listRootTempFiles(absRoot);
     let rootLogBytes = 0;
     for (const f of rootLogs) rootLogBytes += statSize(f);
-    const tempBytes = tmpUsage.size + logsUsage.size + rootLogBytes;
-    const tempFiles = tmpUsage.files + logsUsage.files + rootLogs.length;
+    const tempBytes = tmpUsage.size + logsUsage.size + cacheUsage.size + rootLogBytes;
+    const tempFiles = tmpUsage.files + logsUsage.files + cacheUsage.files + rootLogs.length;
 
     const totalBytes = dbUsage.size + sessionsBytes + subsUsage.size + settingsBytes + tempBytes;
     const hasAnyData =
@@ -398,7 +399,7 @@ export function wipeBotData(options: WipeOptions, root: string = ROOT): WipeResu
 
     if (options.temp) {
         let tmpRemoved = false;
-        for (const dirName of ['tmp', 'logs']) {
+        for (const dirName of ['tmp', 'logs', '.cache']) {
             const p = path.join(absRoot, dirName);
             if (fs.existsSync(p)) {
                 const before = failed.length;

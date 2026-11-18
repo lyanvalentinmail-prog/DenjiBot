@@ -11,6 +11,7 @@ database/
 settings.json
 logs/
 tmp/
+.cache/
 
 # Otros
 .tsbuildinfo
