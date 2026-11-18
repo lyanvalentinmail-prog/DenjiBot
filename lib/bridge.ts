@@ -28,7 +28,8 @@ export type BridgeMessage =
     | { type: 'qr'; qr: string }
     | { type: 'pairing'; code: string }
     | { type: 'need_link'; reason: string }
-    | { type: 'restart' };
+    | { type: 'restart' }
+    | { type: 'wipe_all' };
 
 /** Código de salida que indica al panel que hace falta vincular la sesión. */
 export const EXIT_NEED_LINK = 10;

@@ -70,6 +70,10 @@ export class BoundedMap<K = string, V = any> {
         }
         this.#map.set(k, { v, ts: Date.now() });
     }
+
+    clear(): void {
+        this.#map.clear();
+    }
 }
 
 // Caché separada: `rawGroupMetaCache` conserva los JID originales (@lid/@s.whatsapp.net)
@@ -116,6 +120,12 @@ export function setCachedMeta(groupJid: string, metadata: any): void {
 export function deleteCachedMeta(groupJid: string): void {
     groupMetaCache.delete(groupJid);
     rawGroupMetaCache.delete(groupJid);
+}
+
+export function clearRuntimeCaches(): void {
+    groupMetaCache.clear();
+    rawGroupMetaCache.clear();
+    lidCache.clear();
 }
 
 export const decodeJid = (jid: any): string => {

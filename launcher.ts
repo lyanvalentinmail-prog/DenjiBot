@@ -3,7 +3,13 @@
  *
  * Atajos del menú:
  *   1 Start · 2 Consola del bot · 3 Sesiones · 4 Eliminar sesiones
- *   5 Actualizar bot (git pull) · 6 Personalizar bot · 0 Salir
+ *   5 Actualizar bot (git pull) · 6 Personalizar bot · 7 Eliminar datos · 0 Salir
+ *
+ * También permite borrar los datos por línea de comandos:
+ *   npm run reset                (pide confirmación)
+ *   npm run reset -- --yes       (borra todo sin preguntar)
+ *   npm run reset -- --db        (solo base de datos y caché)
+ *   npm run reset -- --keep-session (conserva sesión y dueños)
  *
  * Si no hay una terminal interactiva (pm2, paneles de hosting, etc.) se
  * ejecuta el bot directamente, igual que `npm run bot`.
@@ -11,7 +17,16 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
+import readline from 'node:readline/promises';
 import { spawn } from 'node:child_process';
+
+const cliArgs = new Set(process.argv.slice(2).map(a => a.toLowerCase()));
+const cliWipe = cliArgs.has('--wipe-all') || cliArgs.has('--reset-all') || cliArgs.has('--borrar-todo');
+
+if (cliWipe) {
+    await runCliWipe(cliArgs);
+    process.exit(0);
+}
 
 const interactive = Boolean(process.stdin.isTTY && process.stdout.isTTY) && !process.env.DENJI_NO_PANEL;
 
@@ -26,12 +41,76 @@ if (!interactive) {
     await runPanel();
 }
 
+async function runCliWipe(flags: Set<string>): Promise<void> {
+    const { inspectBotData, wipeBotData, WIPE_PRESETS, formatDataBytes } = await import('./lib/wipe.ts');
+    const summary = inspectBotData();
+
+    const mode = flags.has('--db') || flags.has('--database')
+        ? 'database'
+        : flags.has('--keep-session') || flags.has('--sin-sesion')
+            ? 'keepSession'
+            : flags.has('--subs') || flags.has('--subbots')
+                ? 'subs'
+                : flags.has('--settings') || flags.has('--ajustes')
+                    ? 'settings'
+                    : flags.has('--tmp') || flags.has('--cache')
+                        ? 'temp'
+                        : 'all';
+
+    const labels = {
+        all: 'TODOS los datos (base de datos, sesiones, sub-bots, settings.json y caché)',
+        keepSession: 'base de datos, sub-bots, caché y ajustes (conservando sesión y dueños)',
+        database: 'base de datos y archivos temporales',
+        subs: 'todas las sesiones de sub-bots',
+        settings: 'archivo de ajustes (settings.json)',
+        temp: 'archivos temporales y registros'
+    } as const;
+
+    console.log('\n DENJI BOT › Eliminar datos\n');
+    console.log(`  Base de datos : ${summary.database.exists ? `${formatDataBytes(summary.database.bytes)} (${summary.database.users} usuarios, ${summary.database.groups} grupos)` : 'vacía'}`);
+    console.log(`  Sesiones      : ${summary.sessions.exists ? `${summary.sessions.count} (${formatDataBytes(summary.sessions.bytes)})` : 'ninguna'}`);
+    console.log(`  Sub-Bots      : ${summary.subs.exists ? `${summary.subs.count} (${formatDataBytes(summary.subs.bytes)})` : 'ninguno'}`);
+    console.log(`  Ajustes       : ${summary.settings.exists ? formatDataBytes(summary.settings.bytes) : 'por defecto'}`);
+    console.log(`  Temporales    : ${summary.temp.exists ? `${summary.temp.files} archivos (${formatDataBytes(summary.temp.bytes)})` : 'limpio'}`);
+    console.log(`  Total         : ${formatDataBytes(summary.totalBytes)}\n`);
+
+    if (!summary.hasAnyData) {
+        console.log(' No hay datos guardados para eliminar.\n');
+        return;
+    }
+
+    const autoYes = flags.has('--yes') || flags.has('-y') || flags.has('--force');
+    if (!autoYes) {
+        if (!process.stdin.isTTY) {
+            console.error(' Terminal no interactiva: añade --yes para confirmar (npm run reset -- --yes).\n');
+            process.exit(1);
+        }
+        console.log(` Se eliminará: ${labels[mode]}.`);
+        console.log(' Asegúrate de tener el bot detenido antes de continuar.\n');
+        const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+        const answer = (await rl.question(' ¿Confirmar eliminación definitiva? (escribe SI para continuar): ')).trim().toLowerCase();
+        rl.close();
+        if (answer !== 'si' && answer !== 'sí' && answer !== 's' && answer !== 'yes' && answer !== 'y') {
+            console.log('\n Operación cancelada.\n');
+            return;
+        }
+    }
+
+    const res = wipeBotData(WIPE_PRESETS[mode]);
+    if (!res.ok) {
+        console.error(`\n ✖ No se pudo eliminar todo: ${res.failed.join(', ')}\n`);
+        process.exit(1);
+    }
+    const detail = res.removed.length ? res.removed.join(', ') : 'sin cambios';
+    console.log(`\n ✔ Datos eliminados (${detail}) · ${formatDataBytes(res.freedBytes)} liberados.\n`);
+}
+
 async function runPanel(): Promise<void> {
     const {
         c, draw, scheduleDraw, initTerminal, restoreTerminal, show, select, prompt, confirm, message,
         fmtBytes, fmtNumber, fmtDuration, fmtAgo, bar, pad, rule, cols, rows, wrap
     } = await import('./lib/panel/tui.ts');
-    const { bot, isRunning, startBot, stopBot, restartBot, killBotNow, panelLog } = await import('./lib/panel/bot.ts');
+    const { bot, isRunning, startBot, stopBot, restartBot, killBotNow, clearBotLogs, panelLog } = await import('./lib/panel/bot.ts');
     const {
         ROOT, loadSettings, saveSettings, resetSettings, cleanNumber, isValidSessionName,
         DEFAULT_BANNER, LOG_MODES, MENU_STYLES, MENU_STYLE_NAMES, MENU_STYLE_HINTS,
@@ -45,12 +124,13 @@ async function runPanel(): Promise<void> {
     type MenuTheme = (typeof MENU_THEMES)[number];
     type ReactionEvent = (typeof REACTION_EVENTS)[number];
     const { listSessions, readSession, deleteSession, migrateLegacySession } = await import('./lib/sessions.ts');
+    const { inspectBotData, wipeBotData, WIPE_PRESETS } = await import('./lib/wipe.ts');
     const { collectStats } = await import('./lib/stats.ts');
 
     type Stats = Awaited<ReturnType<typeof collectStats>>;
     type StartOptions = NonNullable<Parameters<typeof startBot>[0]>;
     type SessionInfo = ReturnType<typeof readSession>;
-    type Action = 'start' | 'console' | 'sessions' | 'delete' | 'update' | 'customize' | 'stop' | 'quit' | 'none';
+    type Action = 'start' | 'console' | 'sessions' | 'delete' | 'update' | 'customize' | 'wipe' | 'stop' | 'quit' | 'none';
 
     const version: string = (() => {
         try {
@@ -80,6 +160,14 @@ async function runPanel(): Promise<void> {
                 statsBusy = false;
             });
     }
+
+    function resetStatsCache(): void {
+        stats = null;
+        statsAt = 0;
+        refreshStats(0);
+    }
+
+    bot.events.on('wipe', () => resetStatsCache());
 
     // ───────────────────────── textos comunes ─────────────────────────
 
@@ -178,14 +266,15 @@ async function runPanel(): Promise<void> {
                     { label: 'Sesiones', hint: 'Ver, crear y elegir', value: 'sessions', key: '3' },
                     { label: 'Eliminar sesiones', hint: 'Borrar vinculaciones', value: 'delete', key: '4' },
                     { label: 'Actualizar bot', hint: 'git pull', value: 'update', key: '5' },
-                    { label: 'Personalizar bot', hint: 'Menú, reacciones, nombre…', value: 'customize', key: '6' }
+                    { label: 'Personalizar bot', hint: 'Menú, reacciones, nombre…', value: 'customize', key: '6' },
+                    { label: 'Eliminar datos', hint: 'BD, sub-bots, ajustes o todo', value: 'wipe', key: '7' }
                 ];
-                if (running) options.push({ label: 'Detener bot', hint: 'Apagar el bot', value: 'stop', key: '7' });
+                if (running) options.push({ label: 'Detener bot', hint: 'Apagar el bot', value: 'stop', key: '8' });
                 options.push({ label: 'Salir', hint: 'Cerrar el panel', value: 'quit', key: '0' });
                 return options;
             },
             back: 'none',
-            footer: '↑↓ mover · Enter elegir · 0-7 atajos',
+            footer: '↑↓ mover · Enter elegir · 0-8 atajos',
             tick: 1000,
             onTick: () => refreshStats(10_000)
         });
@@ -712,6 +801,208 @@ async function runPanel(): Promise<void> {
 
             if (choice === 'back') return;
             await removeSessions(choice === 'all' ? sessions.map(s => s.name) : [choice.slice('session:'.length)]);
+            resetStatsCache();
+        }
+    }
+
+    // ───────────────────────── eliminar datos ─────────────────────────
+
+    async function wipeDataScreen(): Promise<void> {
+        type WipeChoice = 'all' | 'keepSession' | 'database' | 'subs' | 'settings' | 'temp' | 'back';
+
+        const DESCRIPTIONS: Record<Exclude<WipeChoice, 'back'>, { name: string; preview: string; stopsBot: boolean; restartsBot: boolean }> = {
+            all: {
+                name: 'TODOS los datos del bot',
+                preview: 'Borra base de datos, todas las sesiones de WhatsApp, sub-bots, ajustes (settings.json), caché y logs. Deja el bot como recién instalado.',
+                stopsBot: true,
+                restartsBot: false
+            },
+            keepSession: {
+                name: 'datos, sub-bots y ajustes (sin cerrar sesión)',
+                preview: 'Borra base de datos, sub-bots, caché y restablece ajustes, conservando la sesión activa de WhatsApp y los dueños configurados.',
+                stopsBot: true,
+                restartsBot: true
+            },
+            database: {
+                name: 'la base de datos y caché',
+                preview: 'Borra usuarios, grupos, economía, gacha, niveles, perfiles, warns y packs de stickers. Conserva las sesiones, sub-bots y ajustes.',
+                stopsBot: true,
+                restartsBot: true
+            },
+            subs: {
+                name: 'todas las sesiones de sub-bots',
+                preview: 'Borra la carpeta Sessions/ con todos los sub-bots vinculados. Conserva la sesión principal, la base de datos y los ajustes.',
+                stopsBot: true,
+                restartsBot: true
+            },
+            settings: {
+                name: 'los ajustes personalizados (settings.json)',
+                preview: 'Elimina settings.json (nombre, prefijo, moneda, estilo del menú, reacciones y dueños). Conserva la base de datos y las sesiones.',
+                stopsBot: false,
+                restartsBot: false
+            },
+            temp: {
+                name: 'la caché temporal y los logs',
+                preview: 'Limpia tmp/, logs/, archivos .log y el historial de consola del panel sin tocar sesiones, ajustes ni base de datos.',
+                stopsBot: false,
+                restartsBot: false
+            }
+        };
+
+        while (true) {
+            const info = inspectBotData();
+            const dbHint = info.database.exists
+                ? `${fmtBytes(info.database.bytes)} · ${fmtNumber(info.database.users)} usuarios, ${fmtNumber(info.database.groups)} grupos`
+                : 'vacía';
+            const sessHint = info.sessions.exists
+                ? `${info.sessions.count} · ${fmtBytes(info.sessions.bytes)}`
+                : 'ninguna';
+            const subsHint = info.subs.exists
+                ? `${info.subs.count} · ${fmtBytes(info.subs.bytes)}`
+                : 'ninguno';
+            const setHint = info.settings.exists ? fmtBytes(info.settings.bytes) : 'por defecto';
+            const tmpHint = info.temp.exists
+                ? `${info.temp.files} archivo(s) · ${fmtBytes(info.temp.bytes)}`
+                : bot.logs.length ? `${bot.logs.length} líneas en consola` : 'limpio';
+
+            const options: { label: string; hint: string; value: WipeChoice; key: string }[] = [
+                { label: 'Eliminar TODOS los datos', hint: info.hasAnyData ? `Fábrica · ${fmtBytes(info.totalBytes)}` : 'sin datos', value: 'all', key: '1' },
+                { label: 'Datos sin cerrar sesión', hint: 'Conserva sesión y dueños', value: 'keepSession', key: '2' },
+                { label: 'Solo base de datos', hint: info.database.exists ? fmtBytes(info.database.bytes) : 'vacía', value: 'database', key: '3' },
+                { label: 'Solo sub-bots', hint: subsHint, value: 'subs', key: '4' },
+                { label: 'Solo ajustes', hint: setHint, value: 'settings', key: '5' },
+                { label: 'Solo caché y logs', hint: tmpHint, value: 'temp', key: '6' },
+                { label: 'Volver', hint: '', value: 'back', key: '0' }
+            ];
+
+            const choice = await select<WipeChoice>({
+                header: () => [
+                    ...title('Eliminar datos'),
+                    field('Base datos', info.database.exists ? c.white(dbHint) : c.dim('vacía'), 11),
+                    field('Sesiones', info.sessions.exists ? c.white(sessHint) : c.dim('ninguna'), 11),
+                    field('Sub-Bots', info.subs.exists ? c.white(subsHint) : c.dim('ninguno'), 11),
+                    field('Ajustes', info.settings.exists ? c.white(setHint) : c.dim('por defecto'), 11),
+                    field('Temporales', info.temp.exists ? c.white(tmpHint) : c.dim(tmpHint), 11),
+                    field('Total', info.totalBytes ? c.bold(fmtBytes(info.totalBytes)) : c.dim('0 B'), 11)
+                ],
+                options,
+                back: 'back',
+                preview: value => (value === 'back' ? [] : para(DESCRIPTIONS[value].preview, c.dim))
+            });
+
+            if (choice === 'back') return;
+
+            if (choice === 'temp') {
+                const res = wipeBotData(WIPE_PRESETS.temp);
+                clearBotLogs();
+                resetStatsCache();
+                await message(() => [
+                    ...title('Eliminar datos › Caché y logs'),
+                    res.ok
+                        ? ' ' + c.green(`✔ Caché y logs limpiados (${fmtBytes(res.freedBytes)} liberados).`)
+                        : ' ' + c.red(`✖ No se pudo limpiar: ${res.failed.join(', ')}`)
+                ]);
+                continue;
+            }
+
+            if (choice === 'all' && !info.hasAnyData && !bot.logs.length) {
+                await message(() => [...title('Eliminar datos'), ' ' + c.dim('No hay datos guardados para eliminar.')]);
+                continue;
+            }
+            if (choice === 'database' && !info.database.exists && !info.temp.exists) {
+                await message(() => [...title('Eliminar datos'), ' ' + c.dim('La base de datos ya está vacía.')]);
+                continue;
+            }
+            if (choice === 'subs' && !info.subs.exists) {
+                await message(() => [...title('Eliminar datos'), ' ' + c.dim('No hay sesiones de sub-bots guardadas.')]);
+                continue;
+            }
+            if (choice === 'settings' && !info.settings.exists) {
+                await message(() => [...title('Eliminar datos'), ' ' + c.dim('No hay archivo settings.json guardado.')]);
+                continue;
+            }
+
+            const meta = DESCRIPTIONS[choice];
+            const wasRunning = isRunning();
+            const warnLines: string[] = [];
+            if (choice === 'all') {
+                warnLines.push(...para('! Esta acción es irreversible: se perderán usuarios, monedas, personajes, ajustes y vinculaciones de WhatsApp.', c.red));
+            } else {
+                warnLines.push(...para(meta.preview, c.dim));
+            }
+            if (wasRunning && meta.stopsBot) {
+                warnLines.push(
+                    ...para(
+                        meta.restartsBot
+                            ? 'El bot se reiniciará automáticamente para aplicar la limpieza.'
+                            : 'El bot se detendrá y tendrás que vincularlo de nuevo desde "Start".',
+                        c.yellow
+                    )
+                );
+            }
+
+            const ok = await confirm(
+                () => [
+                    ...title('Eliminar datos › Confirmar'),
+                    ...para(`Vas a eliminar ${meta.name}.`),
+                    ...warnLines
+                ],
+                '¿Eliminar definitivamente? (no se puede deshacer)',
+                'Sí, eliminar',
+                'No, cancelar'
+            );
+            if (!ok) continue;
+
+            // Doble confirmación para el restablecimiento total de fábrica.
+            if (choice === 'all') {
+                const typed = await prompt({
+                    header: () => [
+                        ...title('Eliminar datos › Confirmación final'),
+                        ...para('Se borrarán la base de datos, todas las sesiones, sub-bots, ajustes y registros.', c.yellow)
+                    ],
+                    label: 'Escribe BORRAR para confirmar',
+                    hint: 'Pulsa Esc para cancelar sin borrar nada.',
+                    maxLength: 16,
+                    validate: value => (value.toUpperCase() === 'BORRAR' ? null : 'Escribe exactamente BORRAR o pulsa Esc para cancelar.')
+                });
+                if (typed === null) continue;
+            }
+
+            if (wasRunning && meta.stopsBot) {
+                await stopBot();
+            }
+
+            const res = wipeBotData(WIPE_PRESETS[choice]);
+            if (choice === 'all' || choice === 'keepSession') {
+                clearBotLogs();
+                bot.notice = '';
+                bot.qrText = '';
+                bot.pairingCode = '';
+            }
+            panelLog(
+                res.ok
+                    ? `Datos eliminados: ${res.removed.join(', ') || meta.name} (${fmtBytes(res.freedBytes)}).`
+                    : `Error al eliminar datos: ${res.failed.join(', ')}.`
+            );
+
+            if (wasRunning && meta.stopsBot && meta.restartsBot && readSession(loadSettings().activeSession).registered) {
+                startBot();
+            }
+
+            resetStatsCache();
+
+            await message(() => [
+                ...title('Eliminar datos'),
+                ...(res.ok
+                    ? [
+                        ...para(`✔ Eliminado correctamente (${fmtBytes(res.freedBytes)} liberados).`, c.green),
+                        ...(res.removed.length ? para('Elementos: ' + res.removed.join(' · '), c.dim) : []),
+                        ...(choice === 'all' ? para('El bot quedó limpio como recién instalado. Usa "Start" para vincularlo.', c.dim) : [])
+                    ]
+                    : para(`✖ No se pudo eliminar: ${res.failed.join(', ')}`, c.red))
+            ]);
+
+            if (choice === 'all') return;
         }
     }
 
@@ -904,7 +1195,7 @@ async function runPanel(): Promise<void> {
             if (restart) await restartBot();
         }
 
-        const panelFiles = ['launcher.ts', 'package.json', 'lib/settings.ts', 'lib/sessions.ts', 'lib/stats.ts', 'lib/bridge.ts'];
+        const panelFiles = ['launcher.ts', 'package.json', 'lib/settings.ts', 'lib/sessions.ts', 'lib/stats.ts', 'lib/bridge.ts', 'lib/wipe.ts'];
         if (changed.some(file => panelFiles.includes(file) || file.startsWith('lib/panel/'))) {
             await message(() => [
                 ...title('Actualizar bot'),
@@ -1372,7 +1663,8 @@ async function runPanel(): Promise<void> {
         sesiones: 'sessions', sessions: 'sessions',
         eliminar: 'delete', delete: 'delete',
         actualizar: 'update', update: 'update',
-        personalizar: 'customize', config: 'customize'
+        personalizar: 'customize', config: 'customize',
+        datos: 'wipe', borrar: 'wipe', reset: 'wipe', wipe: 'wipe'
     };
     let next: Action | null = shortcuts[(process.argv[2] || '').toLowerCase()] ?? null;
 
@@ -1401,6 +1693,9 @@ async function runPanel(): Promise<void> {
                     break;
                 case 'customize':
                     await customizeScreen();
+                    break;
+                case 'wipe':
+                    await wipeDataScreen();
                     break;
                 case 'stop':
                     await stopBot();

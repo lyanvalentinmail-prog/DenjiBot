@@ -22,7 +22,7 @@
 - **PERFIL (`profile`)** — Perfil, niveles y XP, AFK, matrimonios, divorcios, cumpleaños, género, descripción, hobbies y tabla de líderes.
 - **GRUPOS (`group`)** — Bienvenida y despedida personalizables, antilink, antistatus, alertas, advertencias (`.warn`), conteo de mensajes, `.kick`, `.promote`, `.demote`, `.tagall`, `.hidetag` y modo solo admins.
 - **SUB-BOTS (`socket`)** — Vinculación de Sub-Bots por código (`.code`) o QR (`.qr`), listado de sockets y personalización de nombre, prefijo, moneda, banner, foto y canal.
-- **OWNER (`owner`)** — Configuración de estilo y formato del menú (`.setmenu`), actualización en caliente (`.update`), reinicio y herramientas de propietario.
+- **OWNER (`owner`)** — Configuración de estilo y formato del menú (`.setmenu`), eliminación completa o selectiva de datos (`.resetbot`), actualización en caliente (`.update`), reinicio y herramientas de propietario.
 
 ### **`INSTALACIÓN`**
 
@@ -66,7 +66,8 @@ El menú está diseñado para no saturar el chat:
 | `4` | **Eliminar sesiones** | Borra una sesión o todas (con confirmación). |
 | `5` | **Actualizar bot** | Ejecuta `git pull`, ofrece instalar dependencias y reiniciar. |
 | `6` | **Personalizar bot** | Estilo y formato del menú (con vista previa), reacciones, nombre, prefijo, moneda, desarrollador, dueños, banners, logs y reinicio automático. |
-| `7` | **Detener bot** | Detiene el bot si está encendido. |
+| `7` | **Eliminar datos** | Elimina todos los datos del bot (fábrica) o solo base de datos, sub-bots, ajustes o caché. |
+| `8` | **Detener bot** | Detiene el bot si está encendido. |
 | `0` | **Salir** | Cierra el panel y apaga el bot. |
 
 ### **`OTROS COMANDOS`**
@@ -75,6 +76,7 @@ El menú está diseñado para no saturar el chat:
 npm run bot     # inicia el bot sin panel
 npm run qr      # sin panel, vinculando con código QR
 npm run code    # sin panel, vinculando con código de 8 dígitos
+npm run reset   # elimina todos los datos locales del bot desde la terminal
 npm run build   # verificación de tipos TypeScript
 ```
 

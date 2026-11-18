@@ -86,6 +86,7 @@ let subBotsLoopStarted = false;
 const reconnectingSubs = new Set<string>();
 
 function cleanTmpCache(): void {
+    if ((globalThis as any).__denjiWiping) return;
     try {
         if (!fs.existsSync(TMP_DIR)) {
             fs.mkdirSync(TMP_DIR, { recursive: true });
@@ -101,6 +102,7 @@ cleanTmpCache();
 setInterval(cleanTmpCache, 60 * 60 * 1000).unref();
 
 async function loadSubBots(): Promise<void> {
+    if ((globalThis as any).__denjiWiping) return;
     try {
         if (fs.existsSync(SUBS_DIR)) {
             const mod: any = await import('./commands/socket/subs.js');
@@ -315,6 +317,7 @@ export async function startBot(): Promise<void> {
     }
 
     sock.ev.on('creds.update', async () => {
+        if ((globalThis as any).__denjiWiping) return;
         await saveCreds();
     });
 
@@ -394,6 +397,7 @@ export async function startBot(): Promise<void> {
         if (connection === 'close') {
             try { sock.ev.removeAllListeners(); } catch {}
             try { msgRetryCounterCache.close(); } catch {}
+            if ((globalThis as any).__denjiWiping) return;
 
             const statusCode = new Boom(lastDisconnect?.error)?.output?.statusCode;
             const isStreamError = lastDisconnect?.error?.message?.includes('Stream Errored');
@@ -428,7 +432,7 @@ export async function startBot(): Promise<void> {
     });
 
     sock.ev.on('messages.upsert', ({ messages, type }: any) => {
-        if (type !== 'notify') return;
+        if (type !== 'notify' || (globalThis as any).__denjiWiping) return;
 
         for (const rawMsg of messages) {
             const mId = rawMsg?.key?.id;
