@@ -15,6 +15,7 @@
     "qr": "node --disable-warning=ExperimentalWarning index.ts --qr",
     "code": "node --disable-warning=ExperimentalWarning index.ts --code",
     "dev": "node --disable-warning=ExperimentalWarning --watch index.ts",
+    "reset": "node --disable-warning=ExperimentalWarning launcher.ts --wipe-all",
     "build": "tsc --noEmit"
   },
   "imports": {
@@ -34,7 +35,8 @@
     "#alertas": "./lib/alertas.ts",
     "#settings": "./lib/settings.ts",
     "#interactive": "./lib/interactive.ts",
-    "#menustyles": "./lib/menustyles.ts"
+    "#menustyles": "./lib/menustyles.ts",
+    "#wipe": "./lib/wipe.ts"
   },
   "dependencies": {
     "@hapi/boom": "^10.0.1",

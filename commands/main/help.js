@@ -235,6 +235,7 @@ const USAGE_HINTS = {
   setpfp: '(cita imagen)',
   // owner
   setmenu: '[tema|formato]',
+  resetbot: '[todo|datos|db|subs]',
   exec: '<código>',
   exec2: '<comando>'
 };

@@ -825,7 +825,121 @@ export function setCreate(table: string, identifier: any, field: string, value: 
     return value;
 }
 
+export interface WipeDbResult {
+    users: number;
+    chats: number;
+    characters: number;
+    packs: number;
+    extraFiles: number;
+    freedBytes: number;
+}
+
+/**
+ * Vacía todos los datos almacenados en la base de datos SQLite en caliente
+ * (sin cerrar el proceso ni desconectar WhatsApp) y compacta el archivo.
+ */
+export function wipeAllData(opts: { keepBotSettings?: boolean } = {}): WipeDbResult {
+    const sizeBefore = (() => {
+        let total = 0;
+        for (const suffix of ['', '-wal', '-shm']) {
+            try { total += fs.statSync(`${dbPath}${suffix}`).size; } catch {}
+        }
+        return total;
+    })();
+
+    const countTable = (table: string): number => {
+        try {
+            const row = db.prepare(`SELECT COUNT(*) AS n FROM ${table}`).get() as any;
+            return Number(row?.n) || 0;
+        } catch {
+            return 0;
+        }
+    };
+
+    const users = countTable('users');
+    const chats = countTable('chats');
+    const characters = countTable('characters');
+    const packs = countTable('sticker_packs');
+
+    stmts.clear();
+
+    db.exec('BEGIN IMMEDIATE');
+    try {
+        db.exec('DELETE FROM users');
+        db.exec('DELETE FROM chats');
+        db.exec('DELETE FROM chat_users');
+        db.exec('DELETE FROM characters');
+        db.exec('DELETE FROM sticker_packs');
+        db.exec('DELETE FROM db_meta');
+        if (opts.keepBotSettings) {
+            try {
+                db.exec('UPDATE settings SET commandsejecut = 0, bot_command = 0');
+            } catch {}
+        } else {
+            db.exec('DELETE FROM settings');
+        }
+        // Marcar la migración como aplicada para no alterar futuros chats nuevos.
+        db.prepare('INSERT OR REPLACE INTO db_meta (key, value) VALUES (?, ?)').run('economy_default_v1', '1');
+        db.exec('COMMIT');
+    } catch (err) {
+        try { db.exec('ROLLBACK'); } catch {}
+        throw err;
+    }
+
+    try { db.exec('PRAGMA wal_checkpoint(TRUNCATE)'); } catch {}
+    try { db.exec('VACUUM'); } catch {}
+    try { db.exec('PRAGMA wal_checkpoint(TRUNCATE)'); } catch {}
+
+    // Borrar archivos extra guardados en `database/` (banners/iconos locales, etc.).
+    let extraFiles = 0;
+    let extraBytes = 0;
+    const dbNames = new Set(['database.db', 'database.db-wal', 'database.db-shm', 'database.db-journal']);
+    try {
+        for (const entry of fs.readdirSync(DATABASE_DIR, { withFileTypes: true })) {
+            if (dbNames.has(entry.name)) continue;
+            const full = path.join(DATABASE_DIR, entry.name);
+            try {
+                const st = fs.statSync(full);
+                if (st.isFile()) extraBytes += st.size;
+                fs.rmSync(full, { recursive: true, force: true });
+                extraFiles++;
+            } catch {}
+        }
+    } catch {}
+
+    const sizeAfter = (() => {
+        let total = 0;
+        for (const suffix of ['', '-wal', '-shm']) {
+            try { total += fs.statSync(`${dbPath}${suffix}`).size; } catch {}
+        }
+        return total;
+    })();
+
+    stmts.clear();
+    columnsCache.clear();
+
+    return {
+        users,
+        chats,
+        characters,
+        packs,
+        extraFiles,
+        freedBytes: Math.max(0, sizeBefore - sizeAfter) + extraBytes
+    };
+}
+
+/** Cierra de forma limpia la conexión SQLite para poder borrar `database/` del disco. */
+export function closeDB(): void {
+    initialized = false;
+    stmts.clear();
+    columnsCache.clear();
+    try { db.exec('PRAGMA wal_checkpoint(TRUNCATE)'); } catch {}
+    try { db.close(); } catch {}
+}
+
 export function clearCache(): boolean {
+    stmts.clear();
+    columnsCache.clear();
     return true;
 }
 
@@ -871,6 +985,8 @@ const dbApi = {
     setStickersPack,
     deletedb,
     setCreate,
+    wipeAllData,
+    closeDB,
     clearCache,
     clearDB,
     db

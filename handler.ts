@@ -133,7 +133,7 @@ function hasAdminNumber(adminSet: Set<string>, ...candidates: any[]): boolean {
 }
 
 export async function handler(sock: any, msg: any): Promise<any> {
-    if (!msg?.chat || !msg?.sender) return;
+    if (!msg?.chat || !msg?.sender || g.__denjiWiping) return;
     const startTime = Date.now();
 
     const botNumber = normalizeNumber(sock?.user?.id || sock?.authState?.creds?.me?.id);
@@ -415,6 +415,7 @@ export async function handler(sock: any, msg: any): Promise<any> {
             __dirname: g.plugins?.[cmdData.pluginKey]?.dirname || process.cwd()
         });
 
+        if (g.__denjiWiping) return result;
         reactor.event('done', [command, ...cmdData.aliases]);
         emit('command_executed', {
             command,

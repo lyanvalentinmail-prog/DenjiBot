@@ -176,7 +176,11 @@ export async function collectStats(root: string = ROOT): Promise<Stats> {
     } catch {}
 
     stats.storage.database = fileSize(dbPath) + fileSize(`${dbPath}-wal`) + fileSize(`${dbPath}-shm`);
-    stats.storage.sessions = dirUsage(root === ROOT ? SESSIONS_DIR : path.join(root, 'sessions')).size;
+    const mainSessDir = root === ROOT ? SESSIONS_DIR : path.join(root, 'sessions');
+    stats.storage.sessions =
+        dirUsage(mainSessDir).size +
+        dirUsage(path.join(root, 'Sessions')).size +
+        dirUsage(path.join(root, 'Session')).size;
     stats.storage.project = dirUsage(root, new Set(['node_modules', '.git'])).size;
 
     try {

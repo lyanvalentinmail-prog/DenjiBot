@@ -5,6 +5,7 @@ import chalk from 'chalk';
 import qrcode from 'qrcode';
 import { ROOT, loadSettings } from '../settings.ts';
 import { sessionDir, readSession } from '../sessions.ts';
+import { wipeBotData, WIPE_PRESETS } from '../wipe.ts';
 import { EXIT_NEED_LINK } from '../bridge.ts';
 import type { Runtime, BridgeMessage } from '../bridge.ts';
 
@@ -58,6 +59,12 @@ function addLog(line: string): void {
     if (bot.logs.length > MAX_LOGS) bot.logs.splice(0, bot.logs.length - MAX_LOGS);
 }
 
+export function clearBotLogs(): void {
+    bot.logs = [];
+    bot.logSeq = 0;
+    bot.events.emit('update');
+}
+
 export function panelLog(text: string): void {
     const time = new Date().toLocaleTimeString('es-ES', { hour12: false });
     addLog(`${accent('[ PANEL ]')} ${chalk.gray(time)} ${text}`);
@@ -80,10 +87,42 @@ function attach(stream: NodeJS.ReadableStream | null): void {
     });
 }
 
+let wiping = false;
+
 function onMessage(message: BridgeMessage | string): void {
     if (message === 'restart' || (message && typeof message === 'object' && (message as any).type === 'restart')) {
         panelLog('Reinicio solicitado por comando…');
         void stopBot().then(() => startBot(lastOptions));
+        return;
+    }
+    if (message && typeof message === 'object' && message.type === 'wipe_all') {
+        if (wiping) return;
+        wiping = true;
+        panelLog(chalk.yellow('Eliminando todos los datos del bot por orden del propietario…'));
+        void stopBot()
+            .then(() => {
+                const res = wipeBotData(WIPE_PRESETS.all);
+                bot.logs = [];
+                bot.logSeq = 0;
+                bot.qrText = '';
+                bot.pairingCode = '';
+                bot.runtime = null;
+                lastOptions = {};
+                crashes = [];
+                if (res.ok) {
+                    bot.notice = 'Todos los datos del bot fueron eliminados. Usa "Start" para vincularlo de nuevo.';
+                    panelLog(chalk.green('✔ Todos los datos del bot fueron eliminados.'));
+                } else {
+                    bot.notice = `No se pudo eliminar: ${res.failed.join(', ')}.`;
+                    panelLog(chalk.red(`✖ Error al eliminar: ${res.failed.join(', ')}`));
+                }
+                bot.events.emit('wipe');
+                bot.events.emit('need_link');
+                bot.events.emit('update');
+            })
+            .finally(() => {
+                wiping = false;
+            });
         return;
     }
     if (!message || typeof message !== 'object') return;
@@ -202,7 +241,7 @@ export function startBot(options: StartOptions = {}): void {
             bot.notice = needLinkReason || 'La sesión no está vinculada. Usa "Start" para vincularla.';
             panelLog(chalk.yellow(bot.notice));
             bot.events.emit('need_link');
-        } else if (wasStopping) {
+        } else if (wasStopping || wiping) {
             panelLog('Bot detenido.');
         } else {
             panelLog(chalk.red(`El bot se cerró (${signal ? 'señal ' + signal : 'código ' + code}).`));
