@@ -1,445 +1,433 @@
-import { serialize, UserJid } from '#simple';
-import { registerData, saveDB } from '#db';
-import config from '#config';
 import chalk from 'chalk';
-import { broadcast } from '#index';
 import { LRUCache } from 'lru-cache';
-import * as linkify from 'linkifyjs';
-import { collectPackMedia, isLoosePhoto } from './lib/stickerpack.ts';
+import config from '#config';
+import db from '#db';
+import { getCachedMeta, setCachedMeta, BoundedMap } from '#simple';
+import { statsDay, markCommand } from '#core/latency';
 import { createReactor } from './lib/reactions.ts';
+import type { CommandEntry, HookEntry } from './lib/cmdsLoader.ts';
 
-const handlerConfig = (config as any)?.handler || {};
-const metaTtlMs = handlerConfig.metaTtl || 300000;
-const msgTtlMs = handlerConfig.msgTtl || 10000;
-const maxGroupCache = handlerConfig.maxGroupCache || 500;
-const maxProcessedMsgs = handlerConfig.maxProcessedMsgs || 2000;
-const rateLimitWindowMs = handlerConfig.rateLimitWindow || 3000;
-const maxCmdsPerWin = handlerConfig.maxCommandsPerWindow || 5;
-
-const groupMetaCache = new LRUCache<string, { metadata: any; ts: number }>({
-    max: maxGroupCache,
-    ttl: metaTtlMs,
-});
+const g = globalThis as any;
 
 const processedMsgIds = new LRUCache<string, boolean>({
-    max: maxProcessedMsgs,
-    ttl: msgTtlMs,
+    max: 2000,
+    ttl: 10_000
 });
 
-const userRateLimits = new Map<string, { count: number; resetTime: number }>();
-const commandMap = new Map<string, any>();
-const adminOnlyWarned = new Map<string, Set<string>>();
-let lastPluginsRef: any = null;
+const prefixCache = new BoundedMap<string, { sig: string; regex: RegExp; namebot: string }>(300, 0);
 
-export function invalidateGroupCache(chatId: string): void {
-    if (chatId) groupMetaCache.delete(chatId);
-}
+const normalizeNumber = (x: any): string =>
+    String(x || '').split('@')[0].split(':')[0].replace(/\D/g, '').trim();
 
-setInterval(() => {
-    const now = Date.now();
-    for (const [key, value] of userRateLimits.entries()) {
-        if (now > value.resetTime) {
-            userRateLimits.delete(key);
-        }
-    }
-    for (const [chat, users] of adminOnlyWarned.entries()) {
-        const chatDb = (global as any).db?.data?.chats?.[chat];
-        if (!chatDb?.adminonly) {
-            adminOnlyWarned.delete(chat);
-        }
-    }
-}, 60000);
+const stripMexOne = (num: string): string =>
+    num.startsWith('521') ? '52' + num.slice(3) : num;
 
-const normalizeNumber = (x: string) => String(x || "").split("@")[0].split(":")[0].replace(/[^\d]/g, "").trim();
+const escapeRegex = (s: string): string => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
-const normalizeString = (str: string) => str.normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase();
-
-const stripMexOne = (num: string) => num.startsWith('521') ? '52' + num.slice(3) : num;
-
-function getAdminSet(participants: any[]): Set<string> {
-    const adminSet = new Set<string>();
-    if (!participants || !participants.length) return adminSet;
-
-    for (let i = 0; i < participants.length; i++) {
-        const p = participants[i];
-        if (p.admin === 'admin' || p.admin === 'superadmin') {
-            if (p.id) {
-                const clean = normalizeNumber(p.id);
-                adminSet.add(clean);
-                adminSet.add(stripMexOne(clean));
-                adminSet.add(p.id);
-            }
-            if (p.lid) {
-                const clean = normalizeNumber(p.lid);
-                adminSet.add(clean);
-                adminSet.add(stripMexOne(clean));
-                adminSet.add(p.lid);
-            }
-            if (p.phoneNumber) {
-                const clean = normalizeNumber(p.phoneNumber);
-                adminSet.add(clean);
-                adminSet.add(p.phoneNumber);
-            }
-        }
-    }
-    return adminSet;
-}
-
-function syncCommandMapIfNeeded(): void {
-    const currentPlugins = (global as any).plugins;
-    if (currentPlugins === lastPluginsRef) return;
-    lastPluginsRef = currentPlugins;
-    commandMap.clear();
-    if (currentPlugins && typeof currentPlugins === 'object') {
-        const entries = Object.values(currentPlugins);
-        for (let i = 0; i < entries.length; i++) {
-            const plugin: any = entries[i];
-            if (!plugin?.command) continue;
-            if (plugin.eval || plugin.exec || plugin.require || plugin.fs) {
-                continue;
-            }
-            const execFn = plugin.run || plugin.default || (typeof plugin === 'function' ? plugin : null);
-            if (!execFn) continue;
-            plugin._exec = execFn;
-            const cmd = plugin.command;
-            if (Array.isArray(cmd)) {
-                for (let j = 0; j < cmd.length; j++) {
-                    const cmdStr = String(cmd[j]).toLowerCase().trim();
-                    commandMap.set(cmdStr, plugin);
-                    commandMap.set(normalizeString(cmdStr), plugin);
-                }
-            } else {
-                const cmdStr = String(cmd).toLowerCase().trim();
-                commandMap.set(cmdStr, plugin);
-                commandMap.set(normalizeString(cmdStr), plugin);
-            }
-        }
-    }
-}
-
-async function getGroupMetadata(sock: any, chatId: string): Promise<any> {
-    const cached = groupMetaCache.get(chatId);
-    if (cached?.metadata) {
-        return cached.metadata;
-    }
-    try {
-        const freshMeta = await sock.groupMetadata(chatId);
-        if (freshMeta) {
-            groupMetaCache.set(chatId, { metadata: freshMeta, ts: Date.now() });
-            return freshMeta;
-        }
-    } catch {}
-    return null;
-}
-
-function checkRateLimit(sender: string): boolean {
-    const now = Date.now();
-    let record = userRateLimits.get(sender);
-    if (!record || now > record.resetTime) {
-        userRateLimits.set(sender, { count: 1, resetTime: now + rateLimitWindowMs });
-        return false;
-    }
-    record.count++;
-    return record.count > maxCmdsPerWin;
-}
-
-function logHandlerError(e: any): void {
-    if (e?.message?.includes('rate-overlimit') || e?.status === 429) return;
-    if (!e?.message?.includes('jidDecode')) {
-        console.error(chalk.red('[HANDLER ERROR]:'), e);
+function emit(event: string, payload: any): void {
+    if (typeof g.broadcast === 'function') {
         queueMicrotask(() => {
-            broadcast('handler_error', {
-                error: e?.message || 'Unknown error',
-                stack: e?.stack
-            });
+            try { g.broadcast(event, payload); } catch {}
         });
     }
 }
 
-export const handler = async (sock: any, rawMsg: any): Promise<any> => {
-    const startTime = Date.now();
-    
-    const msgId = rawMsg?.key?.id;
-    if (msgId) {
-        if (processedMsgIds.has(msgId)) return;
-        processedMsgIds.set(msgId, true);
+function getBotPrefixRegex(botJid: string, settings: any): { sig: string; regex: RegExp; namebot: string } {
+    const sig = `${settings.namebot || ''}|${settings.type || ''}|${JSON.stringify(settings.prefix ?? '')}`;
+    const cached = prefixCache.get(botJid);
+    if (cached && cached.sig === sig) return cached;
+
+    const rawBotname = String(settings.namebot || config.botName || 'Denji');
+    const tipo = String(settings.type || 'Sub');
+    const cleanBotname = rawBotname.replace(/[^a-zA-Z0-9\s]/g, '').trim() || 'Denji';
+    const firstWord = cleanBotname.split(' ')[0];
+    const shortForms = Array.from(
+        new Set([
+            cleanBotname,
+            firstWord,
+            firstWord.slice(0, 3),
+            firstWord.slice(0, 2),
+            firstWord.charAt(0),
+            tipo.split(' ')[0]
+        ].filter(Boolean))
+    );
+
+    let regex: RegExp;
+    if (Array.isArray(settings.prefix) || typeof settings.prefix === 'string') {
+        const list = (Array.isArray(settings.prefix) ? settings.prefix : [settings.prefix]).filter(Boolean);
+        const pGroup = list.length ? list.map(escapeRegex).join('|') : escapeRegex(config.prefix || '.');
+        regex = new RegExp(`^(${shortForms.map(escapeRegex).join('|')})?(${pGroup})`, 'i');
+    } else if (settings.prefix === 1) {
+        regex = new RegExp('^', 'i');
+    } else {
+        regex = new RegExp(`^(${escapeRegex(config.prefix || '.')})`, 'i');
     }
 
-    const chat = rawMsg?.key?.remoteJid;
-    if (!chat) return;
+    const entry = { sig, regex, namebot: cleanBotname };
+    prefixCache.set(botJid, entry);
+    return entry;
+}
 
-    const isGroup = chat.endsWith('@g.us');
-    const groupMetadata = isGroup ? await getGroupMetadata(sock, chat) : null;
+let customPrefixCache: { revision: number; size: number; list: [string, CommandEntry][] } = {
+    revision: -1,
+    size: -1,
+    list: []
+};
 
-    const rawParticipant = rawMsg?.key?.participant || rawMsg?.participant || (rawMsg?.key?.fromMe ? sock.user?.id : chat) || '';
-    const msgSender = rawMsg?.sender || '';
+function getCustomPrefixCmds(): [string, CommandEntry][] {
+    const map: Map<string, CommandEntry> = g.comandos;
+    if (!map) return [];
+    if (customPrefixCache.revision !== g.commandRevision || customPrefixCache.size !== map.size) {
+        customPrefixCache = {
+            revision: g.commandRevision || 0,
+            size: map.size,
+            list: [...map.entries()].filter(([, data]) => data.customPrefix)
+        };
+    }
+    return customPrefixCache.list;
+}
 
-    let realJidResult = rawParticipant;
+const adminCache = new WeakMap<object, { participants: any[]; admins: Set<string> }>();
+function getAdmins(metadata: any, participants: any[]): Set<string> {
+    if (!metadata) return new Set();
+    const cached = adminCache.get(metadata);
+    if (cached?.participants === participants) return cached.admins;
+    const admins = new Set<string>();
+    for (const participant of participants) {
+        if (participant.admin !== 'admin' && participant.admin !== 'superadmin') continue;
+        for (const jid of [participant.id, participant.lid, participant.phoneNumber]) {
+            if (!jid) continue;
+            const num = normalizeNumber(jid);
+            if (num) {
+                admins.add(num);
+                admins.add(stripMexOne(num));
+            }
+        }
+    }
+    adminCache.set(metadata, { participants, admins });
+    return admins;
+}
+
+function getAllSessionBots(): string[] {
+    const bots = ((g.conns ?? []) as any[])
+        .filter(c => c?.userId)
+        .map(c => `${c.userId}@s.whatsapp.net`);
+    const ownerId = normalizeNumber(g.sock?.user?.id);
+    if (ownerId) bots.push(`${ownerId}@s.whatsapp.net`);
+    return bots;
+}
+
+function isSameNumber(a: string, b: string): boolean {
+    const na = normalizeNumber(a);
+    const nb = normalizeNumber(b);
+    return Boolean(na && nb && (na === nb || stripMexOne(na) === stripMexOne(nb)));
+}
+
+const PRIVATE_ALLOWED_CMDS = new Set([
+    'allmenu', 'help', 'menu', 'ayuda', 'comandos', 'setmenu', 'menustyle',
+    'infobot', 'botinfo', 'invite', 'invitar', 'ping', 'speed', 'p',
+    'status', 'estado', 'report', 'reporte', 'sug', 'suggest',
+    'bots', 'sockets', 'join', 'unir', 'logout', 'reload', 'self',
+    'setbanner', 'setbotbanner', 'setchannel', 'setbotchannel',
+    'setbotcurrency', 'setcurrency', 'seticon', 'setboticon',
+    'setlink', 'setbotlink', 'setbotname', 'setname',
+    'setbotowner', 'setowner', 'setimage', 'setpfp',
+    'setprefix', 'setbotprefix', 'setstatus', 'setusername',
+    'code', 'qr'
+]);
+
+export async function handler(sock: any, msg: any): Promise<any> {
+    if (!msg?.chat || !msg?.sender) return;
+    const startTime = Date.now();
+
+    const botNumber = normalizeNumber(sock?.user?.id);
+    if (!botNumber) return;
+    const botJid = `${botNumber}@s.whatsapp.net`;
+
+    const dedupeKey = msg.key?.id ? `${botNumber}:${msg.key.id}` : '';
+    if (dedupeKey) {
+        if (processedMsgIds.has(dedupeKey)) return;
+        processedMsgIds.set(dedupeKey, true);
+    }
+
+    const sender: string = msg.sender;
+    const chat = db.getChat(msg.chat);
+    const settings = db.getSettings(botJid);
+
+    const ownerNumbers: string[] = [
+        ...Array.from(config.owner),
+        ...(Array.isArray(g.owner) ? g.owner : [])
+    ];
+    const isOwner = ownerNumbers.some(num => isSameNumber(sender, num));
+    const isROwner =
+        isOwner ||
+        isSameNumber(sender, botJid) ||
+        (settings.owner ? isSameNumber(sender, settings.owner) : false);
+
+    let groupMetadata: any = null;
+    if (msg.isGroup) {
+        groupMetadata = getCachedMeta(msg.chat);
+        if (!groupMetadata) {
+            groupMetadata = await sock.groupMetadata(msg.chat).catch(() => null);
+            if (groupMetadata) setCachedMeta(msg.chat, groupMetadata);
+        }
+    }
+    const participants: any[] = groupMetadata?.participants || [];
+    const adminSet = getAdmins(groupMetadata, participants);
+    const senderNum = normalizeNumber(sender);
+    const isBotAdmins = msg.isGroup
+        ? adminSet.has(botNumber) || adminSet.has(stripMexOne(botNumber))
+        : false;
+    const isAdmins = msg.isGroup
+        ? adminSet.has(senderNum) || adminSet.has(stripMexOne(senderNum))
+        : false;
+
+    const hooks: HookEntry[] = g.cmdsExecute ?? [];
+    const allHooks = hooks.filter(p => p.type === 'all');
+    if (allHooks.length) {
+        Promise.allSettled(
+            allHooks.map(p =>
+                p.fn({
+                    msg, sock, groupMetadata, participants,
+                    isAdmins, isBotAdmins, isOwner, __dirname: p.dirname
+                }).catch((e: any) =>
+                    console.error(chalk.gray(`[ ✿ ] Error all-plugin ${p.key}: ${e?.message || e}`))
+                )
+            )
+        );
+    }
+
+    const today = statsDay();
     try {
-        realJidResult = UserJid(sock, chat, realJidResult) || realJidResult;
+        db.recordMessage(msg.chat, sender, today, msg.pushName);
     } catch {}
 
-    const normalizedSender = normalizeNumber(realJidResult);
-    const normalizedMsgSender = normalizeNumber(msgSender);
+    const textBody = String(msg.text ?? msg.body ?? '');
+    const { regex: prefixRegex } = getBotPrefixRegex(botJid, settings);
 
-    // Las fotos sin comando no cuentan para el límite de mensajes: un álbum llega
-    // de golpe y sus fotos pueden ser para un pack de stickers (.spack).
-    const loosePhoto = isLoosePhoto(rawMsg, (config as any)?.prefix || '.');
-    if (!loosePhoto && checkRateLimit(normalizedSender)) return;
-
-    const altSender = normalizedSender.startsWith('521') 
-        ? normalizedSender.replace(/^521/, '52') 
-        : (normalizedSender.startsWith('52') ? normalizedSender.replace(/^52/, '521') : normalizedSender);
-
-    const baseSender = stripMexOne(normalizedSender);
-
-    const ownerConfig = (config as any)?.owner;
-    let isOwner = false;
-    if (ownerConfig instanceof Set) { 
-        isOwner = ownerConfig.has(normalizedSender) || ownerConfig.has(altSender) || ownerConfig.has(baseSender); 
-    } else if (Array.isArray(ownerConfig)) { 
-        isOwner = ownerConfig.some((num: string) => { 
-            const cleanNum = normalizeNumber(num); 
-            return normalizedSender === cleanNum || altSender === cleanNum || baseSender === stripMexOne(cleanNum); 
-        }); 
-    } else if (typeof ownerConfig === 'string' || typeof ownerConfig === 'number') {
-        const cleanNum = normalizeNumber(String(ownerConfig));
-        isOwner = normalizedSender === cleanNum || altSender === cleanNum || baseSender === stripMexOne(cleanNum);
-    }
-
-    let isAdmins = false;
-    let isBotAdmins = false;
-
-    if (isGroup && groupMetadata?.participants) {
-        const adminSet = getAdminSet(groupMetadata.participants);
-
-        isAdmins = adminSet.has(normalizedSender) || 
-                   adminSet.has(normalizedMsgSender) || 
-                   adminSet.has(altSender) || 
-                   adminSet.has(baseSender) || 
-                   adminSet.has(rawParticipant) || 
-                   adminSet.has(msgSender);
-
-        const rawBotJid = sock.user?.id || sock.user?.jid || '';
-        const botBase = normalizeNumber(rawBotJid);
-        const altBot = botBase.startsWith('521') 
-            ? botBase.replace(/^521/, '52') 
-            : (botBase.startsWith('52') ? botBase.replace(/^52/, '521') : botBase);
-
-        isBotAdmins = adminSet.has(botBase) || adminSet.has(altBot) || adminSet.has(stripMexOne(botBase)) || adminSet.has(rawBotJid);
-    }
-
-    const dbData = (global as any).db?.data;
-    const currentChatDb = dbData?.chats?.[chat] || {};
-
-    if (isGroup && chat && Array.isArray(currentChatDb.muteds)) {
-        const isMuted = currentChatDb.muteds.some((m: string) => {
-            const cleanMuted = normalizeNumber(m);
-            return cleanMuted === normalizedSender || cleanMuted === altSender || cleanMuted === baseSender || m === realJidResult;
-        });
-
-        if (isMuted && !isOwner) {
-            if (isBotAdmins && rawMsg?.key) {
-                sock.sendMessage(chat, { delete: rawMsg.key }).catch(() => null);
-            }
-            return;
+    let customCmd: string | null = null;
+    let pluginPrefix: any = prefixRegex;
+    for (const [cmdName, data] of getCustomPrefixCmds()) {
+        const cp = data.customPrefix;
+        const candidates = cp instanceof RegExp
+            ? [[cp.exec(textBody), cp]]
+            : Array.isArray(cp)
+                ? cp.map(p => {
+                      const r = p instanceof RegExp ? p : new RegExp(escapeRegex(String(p)));
+                      return [r.exec(textBody), r];
+                  })
+                : typeof cp === 'string'
+                    ? [[new RegExp(escapeRegex(cp)).exec(textBody), new RegExp(escapeRegex(cp))]]
+                    : [[null, null]];
+        if (candidates.find(p => p[0])) {
+            customCmd = cmdName;
+            pluginPrefix = cp;
+            break;
         }
     }
 
-    const msg = serialize(sock, rawMsg);
-    if (!msg) return;
+    const matches = pluginPrefix instanceof RegExp
+        ? [[pluginPrefix.exec(textBody), pluginPrefix]]
+        : Array.isArray(pluginPrefix)
+            ? pluginPrefix.map((p: any) => {
+                  const r = p instanceof RegExp ? p : new RegExp(escapeRegex(String(p)));
+                  return [r.exec(textBody), r];
+              })
+            : typeof pluginPrefix === 'string'
+                ? [[new RegExp(escapeRegex(pluginPrefix)).exec(textBody), new RegExp(escapeRegex(pluginPrefix))]]
+                : [[null, null]];
+    const match = matches.find(p => p[0]) || null;
 
-    msg.isGroup = isGroup;
-    msg.isAdmin = isAdmins;
-    msg.isBotAdmin = isBotAdmins;
-    msg.isOwner = isOwner;
-    msg.groupMetadata = groupMetadata;
-
-    const prefix = (config as any)?.prefix || '.';
-    const isCommand = msg.body ? msg.body.charCodeAt(0) === prefix.charCodeAt(0) : false;
-
-    if (isGroup && chat && currentChatDb.antilinks && !isCommand && msg.body) {
-        const detectedLinks = linkify.find(msg.body);
-        if (detectedLinks && detectedLinks.length > 0) {
-            if (!isOwner && !isAdmins && isBotAdmins) {
-                sock.sendMessage(chat, { delete: rawMsg.key }).catch(() => null);
-                sock.groupParticipantsUpdate(chat, [msg.sender], 'remove').catch(() => null);
-                sock.sendMessage(chat, {
-                    text: `✰ @${normalizedSender} fue eliminado por enviar un link.`,
-                    mentions: [msg.sender]
-                }).catch(() => null);
-                return;
-            }
+    const botprimaryId: string | null = chat?.primaryBot || null;
+    if (!botprimaryId || botprimaryId === botJid) {
+        const beforeHooks = hooks.filter(p => p.type === 'before');
+        if (beforeHooks.length) {
+            await Promise.allSettled(
+                beforeHooks.map(p =>
+                    p.fn({
+                        msg, sock, match, groupMetadata, participants,
+                        isAdmins, isBotAdmins, isOwner, __dirname: p.dirname
+                    }).catch((e: any) =>
+                        console.error(chalk.gray(`[ ✿ ] Error before-plugin ${p.key}: ${e?.message || e}`))
+                    )
+                )
+            );
         }
     }
 
-    if (!isCommand) collectPackMedia(sock, msg);
+    if (!match || msg.isCommands) return;
 
-    if (!isCommand || !msg.body) return;
+    const usedPrefix = String((match[0] as any)?.[0] || '');
+    const rest = textBody.slice(usedPrefix.length).trim();
+    if (!rest && !customCmd) return;
 
-    const bodyWithoutPrefix = msg.body.slice(prefix.length).trim();
-    if (!bodyWithoutPrefix) return;
+    const rawParts = rest ? rest.split(/ +/) : [];
+    const rawCmd = customCmd ?? (rawParts.shift() || '');
+    const command = rawCmd.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+    const args = rawParts;
+    const text = args.join(' ');
+    if (!command) return;
 
-    const spaceIndex = bodyWithoutPrefix.indexOf(' ');
-    const rawCommand = spaceIndex === -1 ? bodyWithoutPrefix : bodyWithoutPrefix.slice(0, spaceIndex);
-    if (!rawCommand) return;
+    // Si hay un bot primario activo en el grupo y no somos nosotros, ignoramos.
+    const prefixList = settings.prefix === 1
+        ? []
+        : Array.isArray(settings.prefix)
+            ? settings.prefix
+            : typeof settings.prefix === 'string'
+                ? [settings.prefix]
+                : [config.prefix || '.'];
+    const hasPrefix = settings.prefix === 1 || prefixList.some((p: string) => p && textBody.startsWith(p));
+    if (botprimaryId && botprimaryId !== botJid && hasPrefix) {
+        const groupJids = participants.map(p => p.id);
+        const sessionBots = getAllSessionBots();
+        if (groupJids.includes(botprimaryId) && sessionBots.includes(botprimaryId)) return;
+    }
 
-    syncCommandMapIfNeeded();
-    const cmd = commandMap.get(rawCommand.toLowerCase()) || commandMap.get(normalizeString(rawCommand));
+    if (!isROwner && settings.self) return;
 
-    // Reacciones al mensaje del comando (Personalizar bot › Reacciones).
+    if (!msg.isGroup && !isOwner && !isROwner && !PRIVATE_ALLOWED_CMDS.has(command)) return;
+
+    if (chat?.isBanned && !(command === 'bot' && ['on', 'enable'].includes(text.toLowerCase())) && !isOwner) {
+        const displayPrefix = usedPrefix || config.prefix || '.';
+        await msg.reply(
+            `ꕥ El bot *${settings.botname || config.botName}* está desactivado en este grupo.\n\n` +
+            `> ✎ Un *administrador* puede activarlo con:\n> » *${displayPrefix}bot on*`
+        );
+        return;
+    }
+
     const reactor = createReactor(sock, msg);
 
-    if (!cmd) {
-        // Solo si parece un comando ("..." o ".-." no lo son).
-        if (/^[\p{L}\p{N}_-]+$/u.test(rawCommand)) reactor.event('unknown');
+    if (chat?.adminonly && !isAdmins && !isOwner) {
+        reactor.event('denied');
         return;
     }
 
-    const aliases: string[] = (Array.isArray(cmd.command) ? cmd.command : [cmd.command]).map(String);
+    const cmdMap: Map<string, CommandEntry> = g.comandos;
+    const cmdData = cmdMap?.get(rawCmd.toLowerCase()) || cmdMap?.get(command);
+    if (!cmdData) {
+        if (settings.prefix === 1) return;
+        // Ignorar puntos suspensivos o emoticonos como "..." o ".-."
+        if (!/^[\p{L}\p{N}_-]+$/u.test(command)) return;
+        reactor.event('unknown');
+        return msg.reply(
+            `ꕤ El comando *${command}* no existe.\n✎ Usa *${usedPrefix || config.prefix}menu* para ver los comandos.`
+        );
+    }
 
-    if (cmd.owner && !isOwner) {
+    if (cmdData.isOwner && !isOwner) {
         reactor.event('denied');
-        queueMicrotask(() => {
-            broadcast('security_event', {
-                type: 'unauthorized_access',
-                command: rawCommand,
-                sender: normalizedSender,
-                chat
-            });
+        emit('security_event', {
+            type: 'unauthorized_access',
+            command,
+            sender: senderNum,
+            chat: msg.chat
         });
-        return msg.reply('ׅ  ׄ  ✿ Este comando solo puede ser utilizado por el dueño del bot.');
-    }
-    if (cmd.group && !isGroup) {
-        reactor.event('denied');
-        return msg.reply('ׅ  ׄ  ✿ Este comando solo se puede usar en grupos.');
+        if (settings.prefix === 1) return;
+        return msg.reply('《✧》 Este comando solo puede ser utilizado por el dueño del bot.');
     }
 
-    const onlyAdminEnabled = currentChatDb.adminonly === true;
-    if (onlyAdminEnabled && !isAdmins && !isOwner) {
+    if (cmdData.isGroup && !msg.isGroup) {
         reactor.event('denied');
-        if (!adminOnlyWarned.has(chat)) {
-            adminOnlyWarned.set(chat, new Set());
-        }
-        const warnedUsers = adminOnlyWarned.get(chat)!;
-        if (!warnedUsers.has(normalizedSender)) {
-            warnedUsers.add(normalizedSender);
-            return msg.reply('ׅ  ׄ  ✿ El modo *Solo Admin* está activado, solo administradores pueden usar comandos.');
-        }
-        return;
+        return msg.reply('《✧》 Este comando solo se puede usar en grupos.');
     }
 
-    if (cmd.admin && !isAdmins && !isOwner) {
+    if (cmdData.isAdmin && !isAdmins && !isOwner) {
         reactor.event('denied');
-        queueMicrotask(() => {
-            broadcast('security_event', {
-                type: 'unauthorized_admin_command',
-                command: rawCommand,
-                sender: normalizedSender,
-                chat
-            });
+        emit('security_event', {
+            type: 'unauthorized_admin_command',
+            command,
+            sender: senderNum,
+            chat: msg.chat
         });
-        return msg.reply('ׅ  ׄ  ✿ Necesitas ser administrador del grupo para usar este comando.');
+        return sock.reply(msg.chat, g.mess.admin, msg);
     }
-    if (cmd.botAdmin && !isBotAdmins) {
+
+    if (cmdData.botAdmin && !isBotAdmins) {
         reactor.event('denied');
-        return msg.reply('ׅ  ׄ  ✿ El bot necesita ser administrador del grupo para ejecutar este comando.');
+        return sock.reply(msg.chat, g.mess.botAdmin, msg);
     }
 
-    const cleanSender = normalizedSender + '@s.whatsapp.net';
+    emit('command_received', {
+        msgId: msg.key?.id,
+        command,
+        chat: msg.chat,
+        sender,
+        isGroup: msg.isGroup,
+        timestamp: startTime
+    });
+    emit('command_executing', { command, chat: msg.chat, sender });
 
-    const rawArgs = spaceIndex === -1 ? [] : bodyWithoutPrefix.slice(spaceIndex + 1).trim().split(/ +/);
-    const args = rawArgs.map(arg => arg.replace(/[&;|$`]/g, ''));
+    reactor.event('wait');
 
-    const ctx = {
-        ...msg,
-        sock,
-        m: msg,
-        msg,
-        args,
-        command: rawCommand,
-        prefix,
-        usedPrefix: prefix,
-        owner: isOwner,
-        admin: isAdmins,
-        botAdmin: isBotAdmins,
-        isAdmin: isAdmins,
-        isBotAdmin: isBotAdmins,
-        isOwner,
-        chat,
-        groupMetadata,
-        db: (global as any).db,
-        user: dbData?.users?.[cleanSender] || {},
-        chatDb: currentChatDb,
-        edit: (text: string, key: any) => {
-            if (!key) return Promise.resolve(null);
-            return sock.sendMessage(chat, { text, edit: key });
-        }
-    };
+    try {
+        sock.sendPresenceUpdate('composing', msg.chat).catch(() => {});
+        sock.readMessages([msg.key]).catch(() => {});
 
-    if (cmd._exec) {
-        queueMicrotask(() => {
-            broadcast('command_received', {
-                msgId,
-                command: rawCommand,
-                chat,
-                sender: msg.sender,
-                isGroup,
-                timestamp: startTime
-            });
-            registerData(sock, msg).catch(() => {});
-        });
-
-        if (dbData) {
-            queueMicrotask(() => {
-                if (!dbData.users) dbData.users = {};
-                if (!dbData.users[cleanSender]) dbData.users[cleanSender] = {};
-                const userDb = dbData.users[cleanSender];
-                userDb.usedcommands = (userDb.usedcommands || 0) + 1;
-                userDb.exp = (userDb.exp || 0) + Math.floor(Math.random() * 10) + 5;
-                if (isGroup && dbData.chats?.[chat]?.users?.[cleanSender]) {
-                    dbData.chats[chat].users[cleanSender].lastCmd = Date.now();
-                }
-                saveDB(chat, cleanSender);
-                broadcast('db_updated', {
-                    chat,
-                    user: cleanSender,
-                    exp: userDb.exp,
-                    usedcommands: userDb.usedcommands
-                });
-            });
-        }
-
-        queueMicrotask(() => {
-            broadcast('command_executing', {
-                command: rawCommand,
-                chat,
-                sender: cleanSender
-            });
-        });
-
-        // "Espera" mientras se prepara la respuesta; al terminar pasa a "listo"
-        // (o al emoji propio del comando) y, si falla, a "error".
-        reactor.event('wait');
-
+        const gainedExp = Math.floor(Math.random() * 100);
         try {
-            const result = await cmd._exec(ctx);
-
-            reactor.event('done', [rawCommand, ...aliases]);
-
-            queueMicrotask(() => {
-                broadcast('command_executed', {
-                    command: rawCommand,
-                    chat,
-                    sender: cleanSender,
-                    executionTimeMs: Date.now() - startTime
-                });
+            db.recordCommand(msg.chat, sender, botJid, {
+                name: msg.pushName,
+                exp: gainedExp,
+                now: Date.now(),
+                day: today
             });
+            const u = db.getUser(sender);
+            emit('db_updated', {
+                chat: msg.chat,
+                user: sender,
+                exp: u?.exp || 0,
+                usedcommands: u?.usedcommands || 0
+            });
+        } catch {}
 
-            return result;
-        } catch (e: any) {
-            reactor.event('error');
-            logHandlerError(e);
-        }
+        markCommand(msg);
+
+        const cleanPrefix = usedPrefix || config.prefix || '.';
+        const result = await cmdData.run({
+            msg,
+            m: msg,
+            sock,
+            args,
+            usedPrefix: cleanPrefix,
+            prefix: cleanPrefix,
+            command,
+            text,
+            chat: msg.chat,
+            sender,
+            reply: msg.reply,
+            groupMetadata,
+            participants,
+            isAdmins,
+            isAdmin: isAdmins,
+            isBotAdmins,
+            isBotAdmin: isBotAdmins,
+            isOwner,
+            isROwner,
+            __dirname: g.plugins?.[cmdData.pluginKey]?.dirname || process.cwd()
+        });
+
+        reactor.event('done', [command, ...cmdData.aliases]);
+        emit('command_executed', {
+            command,
+            chat: msg.chat,
+            sender,
+            executionTimeMs: Date.now() - startTime
+        });
+        return result;
+    } catch (error: any) {
+        reactor.event('error');
+        console.error(chalk.red(`[ ERROR ${command} ]:`), error);
+        emit('handler_error', {
+            error: error?.message || String(error),
+            stack: error?.stack
+        });
+        await sock.sendMessage(
+            msg.chat,
+            { text: `《✧》 Error al ejecutar el comando *${command}*.\n> ${error?.message || error}` },
+            { quoted: msg }
+        ).catch(() => {});
     }
-};
+}
+
+export default handler;

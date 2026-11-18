@@ -3,48 +3,56 @@ import makeWASocket, {
     DisconnectReason,
     fetchLatestBaileysVersion,
     makeCacheableSignalKeyStore,
-    Browsers
+    Browsers,
+    jidDecode
 } from '@whiskeysockets/baileys';
 import P from 'pino';
 import { Boom } from '@hapi/boom';
 import chalk from 'chalk';
-import fs, { promises as fsPromises } from 'fs';
-import path, { join, dirname } from 'path';
-import { fileURLToPath, pathToFileURL } from 'url';
-import readline from 'readline';
+import fs from 'node:fs';
+import path from 'node:path';
+import readline from 'node:readline';
 import qrcode from 'qrcode';
-import { EventEmitter } from 'events';
-import { LRUCache } from 'lru-cache';
-import debounce from 'lodash.debounce';
+import { EventEmitter } from 'node:events';
+import NodeCache from 'node-cache';
 import Agent from 'node:https';
-import { serialize } from '#simple';
-import { loadDB } from '#db';
 import config from '#config';
-import { handler, invalidateGroupCache } from '#handler';
+import db from '#db';
+import { smsg, getCachedMeta, deleteCachedMeta, patchGroupMetadata } from '#simple';
+import { createSignalCache } from '#core/signal-cache';
+import { beginMessage, instrumentSocket } from '#core/latency';
+import cmdsLoader from '#loader';
+import handler from '#handler';
 import printMessageLog from './lib/printlog.ts';
-import { handleGroupAlerts, handleGroupParticipants } from '#alertas';
-import { getSessionDir } from './lib/settings.ts';
+import { handleGroupAlerts } from '#alertas';
+import { getSessionDir, TMP_DIR, SUBS_DIR } from './lib/settings.ts';
 import { migrateLegacySession } from './lib/sessions.ts';
 import { initBridge, underPanel, EXIT_NEED_LINK } from './lib/bridge.ts';
-
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = dirname(__filename);
 
 declare global {
     var botName: string;
     var plugins: Record<string, any>;
+    var comandos: Map<string, any>;
+    var cmdsExecute: any[];
+    var commandRevision: number;
+    var conns: any[];
+    var sock: any;
+    var mainConn: any;
     var eventBus: EventEmitter;
     var broadcast: (event: string, payload: any) => void;
 }
 
 globalThis.botName = config?.botName || 'Denji bot';
 globalThis.plugins = globalThis.plugins || {};
+globalThis.comandos = globalThis.comandos || new Map();
+globalThis.cmdsExecute = globalThis.cmdsExecute || [];
+globalThis.conns = globalThis.conns || [];
 
 export const eventBus = globalThis.eventBus || new EventEmitter();
 eventBus.setMaxListeners(50);
 globalThis.eventBus = eventBus;
 
-export function broadcast(event: string, payload: any) {
+export function broadcast(event: string, payload: any): void {
     eventBus.emit(event, { payload, timestamp: Date.now() });
     eventBus.emit('*', { event, payload, timestamp: Date.now() });
 }
@@ -52,14 +60,13 @@ export function broadcast(event: string, payload: any) {
 globalThis.broadcast = broadcast;
 
 initBridge(eventBus);
-
 migrateLegacySession();
-const sDir = getSessionDir();
 
-const mStore = new LRUCache<string, any>({
-    max: 1000,
-    ttl: 1000 * 60 * 5
-});
+if (!fs.existsSync(TMP_DIR)) fs.mkdirSync(TMP_DIR, { recursive: true });
+
+const sDir = getSessionDir();
+const msgStore = new Map<string, any>();
+const MSG_STORE_LIMIT = 500;
 
 const httpAgent = new Agent.Agent({
     keepAlive: true,
@@ -69,12 +76,55 @@ const httpAgent = new Agent.Agent({
 });
 
 const envMethod = (process.env.DENJI_METHOD || '').toLowerCase();
-const methodCodeQR = process.argv.includes("--qr") || envMethod === 'qr';
-const methodCode = process.argv.includes("code") || process.argv.includes("--code") || envMethod === 'code';
-const presetPhone = process.env.DENJI_PHONE || process.argv.find(a => a.startsWith('--phone='))?.slice(8) || '';
+const methodCodeQR = process.argv.includes('--qr') || envMethod === 'qr';
+const methodCode = process.argv.includes('code') || process.argv.includes('--code') || envMethod === 'code';
+const presetPhone =
+    process.env.DENJI_PHONE || process.argv.find(a => a.startsWith('--phone='))?.slice(8) || '';
 
-let commandsWatcherStarted = false;
 let bannerShown = false;
+let loaderStarted = false;
+let subBotsLoopStarted = false;
+const reconnectingSubs = new Set<string>();
+
+function cleanTmpCache(): void {
+    try {
+        if (!fs.existsSync(TMP_DIR)) {
+            fs.mkdirSync(TMP_DIR, { recursive: true });
+            return;
+        }
+        for (const file of fs.readdirSync(TMP_DIR)) {
+            try { fs.unlinkSync(path.join(TMP_DIR, file)); } catch {}
+        }
+    } catch {}
+}
+
+cleanTmpCache();
+setInterval(cleanTmpCache, 60 * 60 * 1000).unref();
+
+async function loadSubBots(): Promise<void> {
+    try {
+        if (fs.existsSync(SUBS_DIR)) {
+            const mod: any = await import('./commands/socket/subs.js');
+            const startSubBot = mod?.startSubBot;
+            if (typeof startSubBot === 'function') {
+                for (const userId of fs.readdirSync(SUBS_DIR)) {
+                    const credsPath = path.join(SUBS_DIR, userId, 'creds.json');
+                    if (!fs.existsSync(credsPath)) continue;
+                    if (globalThis.conns.some(c => c?.userId === userId)) continue;
+                    if (reconnectingSubs.has(userId)) continue;
+                    try {
+                        reconnectingSubs.add(userId);
+                        await startSubBot(null, null, '', false, userId, '');
+                    } catch {
+                        reconnectingSubs.delete(userId);
+                    }
+                    await new Promise(res => setTimeout(res, 2500));
+                }
+            }
+        }
+    } catch {}
+    setTimeout(loadSubBots, 60_000).unref();
+}
 
 function requestLink(reason: string): Promise<never> {
     console.log(chalk.yellow(`[ SESSION ] ${reason}`));
@@ -90,7 +140,7 @@ function requestLink(reason: string): Promise<never> {
     });
 }
 
-function normalizePhone(input: any) {
+function normalizePhone(input: any): string {
     let s = String(input).replace(/\D/g, '');
     if (!s) return '';
     if (s.startsWith('0')) s = s.replace(/^0+/, '');
@@ -100,98 +150,60 @@ function normalizePhone(input: any) {
     return s;
 }
 
-const limpiarSesion = () => {
+function limpiarSesion(): void {
     if (fs.existsSync(sDir)) {
         try {
             fs.rmSync(sDir, { recursive: true, force: true });
         } catch {}
     }
-};
-
-async function cargarPlugins(dir = './commands') {
-    const cmdDir = path.resolve(__dirname, dir);
-    if (!fs.existsSync(cmdDir)) return;
-
-    const newPlugins: Record<string, any> = {};
-
-    async function getAllFiles(directory: string): Promise<string[]> {
-        const entries = await fsPromises.readdir(directory, { withFileTypes: true });
-        const files = await Promise.all(entries.map(e => {
-            const res = join(directory, e.name);
-            return e.isDirectory() ? getAllFiles(res) : Promise.resolve([res]);
-        }));
-        return files.flat();
-    }
-
-    try {
-        const allFiles = await getAllFiles(cmdDir);
-        const files = allFiles.filter(f => 
-            (f.endsWith('.ts') || f.endsWith('.js')) && !f.endsWith('.d.ts')
-        );
-
-        const ts = Date.now();
-
-        await Promise.all(
-            files.map(async (fullPath) => {
-                try {
-                    const fileUrl = pathToFileURL(fullPath).href;
-                    const cmdModule = await import(`${fileUrl}?update=${ts}`);
-                    const plugin = cmdModule.default?.default || cmdModule.default || cmdModule;
-                    const pluginName = path.basename(fullPath);
-                    newPlugins[pluginName] = plugin;
-                } catch {}
-            })
-        );
-
-        globalThis.plugins = newPlugins;
-        broadcast('plugins_loaded', { count: Object.keys(newPlugins).length });
-    } catch (e) {
-        console.error(chalk.red('[ ERROR ] Error al cargar plugins:'), e);
-        broadcast('plugins_error', { error: String(e) });
-    }
 }
 
 const askQuestion = async (query: string): Promise<string> => {
     const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
-    return new Promise((resolve) => {
-        rl.question(query, (ans) => {
+    return new Promise(resolve => {
+        rl.question(query, ans => {
             rl.close();
             resolve(ans.trim());
         });
     });
 };
 
-const displayLoadingMessage = () => {
-    console.log(chalk.bold.white(`\n\nPor favor, Ingrese el número de WhatsApp.\n` +
-        `${chalk.bold.cyan("Ejemplo: +521XXXXXXXXXX")}\n` +
-        `${chalk.bold.white('---> ')} `));
+const displayLoadingMessage = (): void => {
+    console.log(
+        chalk.bold.white(
+            `\n\nPor favor, ingrese el número de WhatsApp.\n` +
+            `${chalk.bold.cyan('Ejemplo: +521XXXXXXXXXX')}\n` +
+            `${chalk.bold.white('---> ')} `
+        )
+    );
 };
 
-async function startBot() {
-    await loadDB();
-    await cargarPlugins('./commands');
+export async function startBot(): Promise<void> {
+    db.initDB();
+    db.clearDB();
+
+    if (!loaderStarted) {
+        loaderStarted = true;
+        await cmdsLoader(true);
+    }
 
     if (!fs.existsSync(sDir)) {
         fs.mkdirSync(sDir, { recursive: true });
     }
 
     let { state, saveCreds } = await useMultiFileAuthState(sDir);
-    const { version } = await fetchLatestBaileysVersion();
+    const { version } = await fetchLatestBaileysVersion().catch(() => ({
+        version: [2, 3000, 1033105955] as [number, number, number]
+    }));
 
-    let opcion: string = '';
-    let usarCodigo: boolean = false;
-
-    // `registered` solo se activa al vincular con código; con QR lo que queda
-    // guardado es `account`. Sin esta comprobación una sesión vinculada por QR
-    // se trataría como nueva y se borraría en cada reinicio.
+    let opcion = '';
+    let usarCodigo = false;
     const vinculada = Boolean(state.creds.registered || state.creds.account);
 
     if (!vinculada) {
         if (!bannerShown) {
             bannerShown = true;
-            console.log(chalk.cyan(`
-      Denji | Wa Bot
-`));
+            console.log(chalk.cyan('\n      Denji | Wa Bot\n'));
         }
 
         if (methodCodeQR) {
@@ -200,9 +212,11 @@ async function startBot() {
             opcion = '2';
             usarCodigo = true;
         } else if (underPanel() || !process.stdin.isTTY) {
-            await requestLink('La sesión no está vinculada. Usa "Start" en el panel (npm start), o ejecuta "npm run qr" o "npm run code".');
+            await requestLink(
+                'La sesión no está vinculada. Usa "Start" en el panel (npm start), o ejecuta "npm run qr" o "npm run code".'
+            );
         } else {
-            let lineM = '⋯ ⋯ ⋯ ⋯ ⋯ ⋯ ⋯ ⋯ ⋯ ⋯ ⋯ 》';
+            const lineM = '⋯ ⋯ ⋯ ⋯ ⋯ ⋯ ⋯ ⋯ ⋯ ⋯ ⋯ 》';
             console.log(chalk.white(`╭${lineM}`));
             opcion = await askQuestion(
                 `┊ ${chalk.bold.cyan(' METODO DE VINCULACION ')}\n` +
@@ -210,7 +224,7 @@ async function startBot() {
                 `┊ ${chalk.bold.white('⇢ Opcion 2:')} ${chalk.cyan('Codigo de 8 digitos.')}\n` +
                 `╰${lineM}\n${chalk.bold.white('---> ')}`
             );
-            usarCodigo = opcion === "2";
+            usarCodigo = opcion === '2';
         }
 
         limpiarSesion();
@@ -225,28 +239,51 @@ async function startBot() {
 
     broadcast('bot_status', { status: 'connecting' });
 
-    const sock = makeWASocket({
-        logger: P({ level: 'silent' }) as any,
+    const logger = P({ level: 'silent' }) as any;
+    const msgRetryCounterCache = new NodeCache({ stdTTL: 3600, checkperiod: 600, useClones: false });
+
+    const sock: any = makeWASocket({
+        logger,
         printQRInTerminal: false,
         version,
         browser: Browsers.macOS('Safari'),
         auth: {
             creds: state.creds,
-            keys: makeCacheableSignalKeyStore(state.keys, P({ level: 'silent' }) as any)
+            keys: makeCacheableSignalKeyStore(state.keys, logger, createSignalCache())
         },
         markOnlineOnConnect: false,
         emitOwnEvents: false,
         generateHighQualityLinkPreview: false,
         syncFullHistory: false,
-        downloadHistory: false,
         fireInitQueries: false,
+        shouldIgnoreJid: (jid: string) => jid.endsWith('@broadcast'),
         keepAliveIntervalMs: 30000,
         connectTimeoutMs: 60000,
         defaultQueryTimeoutMs: undefined,
         retryRequestDelayMs: 250,
-        getMessage: async () => undefined,
-        fetchOpts: { agent: httpAgent } as any
+        msgRetryCounterCache: msgRetryCounterCache as any,
+        cachedGroupMetadata: async (jid: string) => getCachedMeta(jid),
+        getMessage: async (key: any) => msgStore.get(`${key.remoteJid}:${key.id}`),
+        fetchAgent: httpAgent as any
     });
+
+    let bootTime = Date.now();
+    sock.uptime = bootTime;
+    sock.sessionFolder = sDir;
+    sock.msgRetryCounterCache = msgRetryCounterCache;
+    sock.decodeJid = (jid: string) => {
+        if (!jid) return jid;
+        if (/:\d+@/i.test(jid)) {
+            const decoded = jidDecode(jid);
+            return decoded?.user && decoded?.server ? `${decoded.user}@${decoded.server}` : jid;
+        }
+        return jid;
+    };
+
+    instrumentSocket(sock);
+    patchGroupMetadata(sock);
+    globalThis.sock = sock;
+    globalThis.mainConn = sock;
 
     if (usarCodigo && !vinculada) {
         let num = presetPhone;
@@ -262,14 +299,16 @@ async function startBot() {
         setTimeout(async () => {
             try {
                 let code = await sock.requestPairingCode(num);
-                code = code?.match(/.{1,4}/g)?.join("-") || code;
-                console.log(chalk.white.bgBlue(` CODIGO DE VINCULACION `), chalk.white(`: ${code}`));
+                code = code?.match(/.{1,4}/g)?.join('-') || code;
+                console.log(chalk.white.bgBlue(' CODIGO DE VINCULACION '), chalk.white(`: ${code}`));
                 broadcast('pairing_code', { code });
             } catch (err) {
                 console.log(chalk.red('[ ERROR ] Falla al generar código de vinculación:'), err);
                 limpiarSesion();
                 if (underPanel()) {
-                    await requestLink('No se pudo generar el código de vinculación. Revisa el número y tu conexión, e inténtalo de nuevo.');
+                    await requestLink(
+                        'No se pudo generar el código de vinculación. Revisa el número y tu conexión, e inténtalo de nuevo.'
+                    );
                 }
                 setTimeout(() => startBot(), 2000);
             }
@@ -280,25 +319,41 @@ async function startBot() {
         await saveCreds();
     });
 
-    sock.ev.on('group-participants.update', async (update) => {
-        const { id, action } = update;
-        invalidateGroupCache(id);
-        broadcast('group_updated', { chatId: id, action });
-        await handleGroupParticipants(sock, update);
+    // Eventos de bienvenida, despedida, promote y demote (YukiBot-MD)
+    try {
+        const eventsMod: any = await import('./commands/events.js');
+        if (typeof eventsMod?.default === 'function') {
+            await eventsMod.default(sock, null);
+        }
+    } catch (err) {
+        console.log(chalk.gray(`[ EVENT ERROR ] → ${err}`));
+    }
+
+    sock.ev.on('group-participants.update', (update: any) => {
+        if (update?.id) {
+            deleteCachedMeta(update.id);
+            broadcast('group_updated', { chatId: update.id, action: update.action });
+        }
     });
 
-    sock.ev.on('groups.update', async (updates) => {
+    sock.ev.on('groups.update', async (updates: any[]) => {
+        for (const u of updates) {
+            if (u?.id) deleteCachedMeta(u.id);
+        }
         await handleGroupAlerts(sock, updates);
     });
 
-    sock.ev.on('connection.update', async (u) => {
+    sock.ev.on('connection.update', async (u: any) => {
         const { connection, lastDisconnect, qr } = u;
 
         if (qr && esQR) {
             try {
                 if (underPanel()) {
-                    // El panel dibuja el QR a pantalla completa.
-                    console.log(chalk.bold.cyan('[ QR ] Nuevo código QR generado. Escanéalo desde WhatsApp > Dispositivos vinculados.'));
+                    console.log(
+                        chalk.bold.cyan(
+                            '[ QR ] Nuevo código QR generado. Escanéalo desde WhatsApp > Dispositivos vinculados.'
+                        )
+                    );
                 } else {
                     const qrTerminal = await qrcode.toString(qr, { type: 'terminal', small: true });
                     console.log(chalk.bold.cyan('\n[ QR ] ESCANEA EL SIGUIENTE CÓDIGO QR:\n'));
@@ -311,19 +366,36 @@ async function startBot() {
         }
 
         if (connection === 'open') {
-            (global as any).mainConn = sock;
+            bootTime = Date.now();
+            sock.uptime = bootTime;
+            globalThis.sock = sock;
+            globalThis.mainConn = sock;
+
+            const number = (sock.user?.id || '').split('@')[0].split(':')[0];
+            if (number) {
+                const mainJid = `${number}@s.whatsapp.net`;
+                db.getSettings(mainJid);
+                db.setSettings(mainJid, 'type', 'Owner');
+            }
+
             console.log(chalk.bold.cyan(`\n✿ ${globalThis.botName} conectado y listo ✰\n`));
-            // Juegos HTML: si quedaron partidas abiertas, se vuelve a escuchar su guardado.
-            import('./lib/games.ts').then(games => games.resumeGames(sock)).catch(err => console.log(chalk.red('[ GAMES ]'), err?.message || err));
             broadcast('bot_status', {
                 status: 'connected',
                 botName: globalThis.botName,
-                number: (sock.user?.id || '').split('@')[0].split(':')[0],
+                number,
                 name: sock.user?.name || ''
             });
+
+            if (!subBotsLoopStarted) {
+                subBotsLoopStarted = true;
+                loadSubBots().catch(() => {});
+            }
         }
 
         if (connection === 'close') {
+            try { sock.ev.removeAllListeners(); } catch {}
+            try { msgRetryCounterCache.close(); } catch {}
+
             const statusCode = new Boom(lastDisconnect?.error)?.output?.statusCode;
             const isStreamError = lastDisconnect?.error?.message?.includes('Stream Errored');
             broadcast('bot_status', { status: 'disconnected', statusCode });
@@ -335,7 +407,9 @@ async function startBot() {
                 console.log(chalk.red('[ SESSION ] Sesión cerrada desde el teléfono. Limpiando...'));
                 limpiarSesion();
                 if (underPanel()) {
-                    await requestLink('La sesión se cerró desde el teléfono. Usa "Start" en el panel para vincularla de nuevo.');
+                    await requestLink(
+                        'La sesión se cerró desde el teléfono. Usa "Start" en el panel para vincularla de nuevo.'
+                    );
                 }
                 setTimeout(() => startBot(), 2000);
             } else {
@@ -345,72 +419,55 @@ async function startBot() {
         }
     });
 
-    sock.ev.on('messages.upsert', ({ messages, type }) => {
+    sock.ev.on('messages.upsert', ({ messages, type }: any) => {
         if (type !== 'notify') return;
 
-        const len = messages.length;
-        const serializedCache = new Map();
-
-        for (let i = 0; i < len; i++) {
-            const rawMsg = messages[i];
+        for (const rawMsg of messages) {
             const mId = rawMsg?.key?.id;
             if (!mId || !rawMsg.message) continue;
 
             const jid = rawMsg.key.remoteJid || '';
             if (jid === 'status@broadcast' || jid.endsWith('@broadcast')) continue;
 
-            if (mStore.has(mId)) continue;
-            mStore.set(mId, true);
+            const ts = typeof rawMsg.messageTimestamp === 'number'
+                ? rawMsg.messageTimestamp
+                : rawMsg.messageTimestamp?.low || 0;
+            if (ts && ts * 1000 < bootTime - 15_000) continue;
 
-            const msg = serialize(sock, rawMsg);
-            if (!msg) continue;
+            beginMessage(rawMsg);
+            const sid = `${jid}:${mId}`;
+            msgStore.set(sid, rawMsg.message);
+            if (msgStore.size > MSG_STORE_LIMIT) {
+                const first = msgStore.keys().next().value;
+                if (first) msgStore.delete(first);
+            }
 
-            serializedCache.set(mId, msg);
-
-            handler(sock, rawMsg, msg).catch(() => {});
-
-            queueMicrotask(() => {
-                const cachedMsg = serializedCache.get(mId) || msg;
-                printMessageLog(cachedMsg, sock).catch(() => {});
-                broadcast('message_received', {
-                    id: mId,
-                    jid,
-                    pushName: rawMsg.pushName,
-                    body: cachedMsg.body?.substring(0, 100) || ''
-                });
-            });
-        }
-
-        if (serializedCache.size > 0) {
-            queueMicrotask(() => {
-                serializedCache.clear();
-            });
+            void (async () => {
+                try {
+                    const m = await smsg(sock, rawMsg);
+                    if (!m) return;
+                    await handler(sock, m);
+                    queueMicrotask(() => {
+                        printMessageLog(m, sock).catch(() => {});
+                        broadcast('message_received', {
+                            id: mId,
+                            jid,
+                            pushName: rawMsg.pushName,
+                            body: String(m.body || '').slice(0, 100)
+                        });
+                    });
+                } catch {}
+            })();
         }
     });
-
-    const commandsPath = path.join(__dirname, 'commands');
-    if (fs.existsSync(commandsPath) && !commandsWatcherStarted) {
-        commandsWatcherStarted = true;
-        const reloadCommandsDebounced = debounce(() => {
-            cargarPlugins('./commands').catch(() => {});
-        }, 300);
-
-        fs.watch(commandsPath, { recursive: true }, (_, filename) => {
-            if (filename && (filename.endsWith('.ts') || filename.endsWith('.js'))) {
-                reloadCommandsDebounced();
-            }
-        });
-    }
 }
 
 startBot().catch(() => {});
 
 const originalStdoutWrite = process.stdout.write.bind(process.stdout);
-const originalStderrWrite = process.stderr.write.bind(process.stderr);
 
 const filterNoise = (chunk: any, encoding?: any, callback?: any) => {
     const str = typeof chunk === 'string' ? chunk : chunk.toString('utf8');
-    
     if (
         str.includes('Closing open session') ||
         str.includes('Closing session') ||
@@ -424,13 +481,11 @@ const filterNoise = (chunk: any, encoding?: any, callback?: any) => {
         str.includes('Bad MAC') ||
         str.includes('Failed to decrypt') ||
         str.includes('Session error') ||
-        str.includes('Session error:') ||
         str.includes('Error: bad-mac')
     ) {
         if (typeof callback === 'function') callback();
         return true;
     }
-    
     return originalStdoutWrite(chunk, encoding, callback);
 };
 
