@@ -277,7 +277,7 @@ function cleanStr(s = '') {
 
 function shortenDesc(desc = '') {
   const s = String(desc || '').replace(/\s+/g, ' ').replace(/\.$/, '').trim();
-  return s.length > 46 ? s.slice(0, 43).trimEnd() + '…' : s;
+  return s.length > 70 ? s.slice(0, 67).trimEnd() + '…' : s;
 }
 
 function formatUptime(sec) {
