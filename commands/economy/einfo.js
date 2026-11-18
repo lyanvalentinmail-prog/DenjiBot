@@ -19,9 +19,9 @@ export default {
   description: 'Ver tu información de economía y cooldowns.',
   run: async ({ msg, sock, usedPrefix, text }) => {
     const chatId = msg.chat;
-    const botId = sock.user.id.split(':')[0] + "@s.whatsapp.net";
+    const botId = sock.user.id.split('@')[0].split(':')[0] + "@s.whatsapp.net";
     const chatData = db.getChat(chatId);
-    if (chatData.adminonly || !chatData.economy) {
+    if (!chatData.economy) {
       return msg.reply(`ꕥ Los comandos de *Economía* están desactivados en este grupo.\n\nUn *administrador* puede activarlos con el comando:\n» *${usedPrefix}economy on*`);
     }        
     db.setCreate('chat_users', [chatId, msg.sender], 'lastcrime', 0);

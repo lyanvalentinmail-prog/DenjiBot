@@ -8,10 +8,10 @@ export default {
   command: ['reload'],
   category: 'socket',
   description: 'Recargar la sesión del bot.',
-  run: async ({ msg, sock, args }) => {
-    const botId = sock?.user?.id.split(':')[0] + '@s.whatsapp.net' || '';
+  run: async ({ msg, sock, args, isROwner }) => {
+    const botId = (sock?.user?.id || '').split('@')[0].split(':')[0] + '@s.whatsapp.net' || '';
     const botSettings = db.getSettings(botId) || {};
-    const isOwner2 = [botId, ...(botSettings.owner ? [botSettings.owner] : []), ...((global).owner || []).map((num) => num + '@s.whatsapp.net')].includes(msg.sender);
+    const isOwner2 = isROwner || [botId, ...(botSettings.owner ? [botSettings.owner] : []), ...((global).owner || []).map((num) => num + '@s.whatsapp.net')].includes(msg.sender);
     if (!isOwner2) return sock.reply(msg.chat, '《✧》 Este comando solo puede ser ejecutado por un Socket.', msg);
     const rawId = sock.user?.id || '';
     const decoded = jidDecode(rawId);

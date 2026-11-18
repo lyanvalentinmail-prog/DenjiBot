@@ -8,10 +8,10 @@ export default {
     const userId = msg.sender;
     db.setCreate('chats', chatId, 'sales', {});
     const chat = db.getChat(chatId);
-    if (chat.adminonly || !chat.gacha) {
+    if (!chat.gacha) {
       return msg.reply(`ꕥ Los comandos de *Gacha* están desactivados en este grupo.\n\nUn *administrador* puede activarlos con el comando:\n» *${usedPrefix}gacha on*`);
     }
-    const botId = sock.user.id.split(':')[0] + '@s.whatsapp.net';
+    const botId = sock.user.id.split('@')[0].split(':')[0] + '@s.whatsapp.net';
     const settings = db.getSettings(botId);
     const currency = settings?.currency;
     try {

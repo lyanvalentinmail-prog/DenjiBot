@@ -6,6 +6,7 @@ import zlib from 'zlib';
 import {
     generateWAMessageFromContent,
     getMediaKeys,
+    jidNormalizedUser,
     MEDIA_HKDF_KEY_MAPPING,
     MEDIA_PATH_MAP,
     proto
@@ -219,7 +220,7 @@ export async function sendStickerPack(sock: any, jid: string, input: PackInput, 
     };
 
     const message = generateWAMessageFromContent(jid, { stickerPackMessage }, {
-        userJid: sock.user?.id,
+        userJid: sock.user?.id ? jidNormalizedUser(sock.user.id) : undefined,
         quoted
     } as any);
 

@@ -124,22 +124,60 @@ function pickDetails($) {
   return { size, uploaded }
 }
 
-async function mediafireDl(url, timeout = 45000) {
+async function mediafireDl(url, timeout = 30000) {
   const mediafireUrl = cleanText(url)
   if (!mediafireUrl) throw new Error('URL requerida')
-  const res = await axios.get(mediafireUrl, { timeout, maxRedirects: 5, headers: { 'User-Agent': UA, 'Accept-Language': 'en-US,en;q=0.9', Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8' }, validateStatus: () => true })
-  if (res.status < 200 || res.status >= 400) {
-    throw new Error(`MediaFire HTTP ${res.status}`)
+
+  // 1. Scraping directo (incluye soporte para `data-scrambled-url` en base64)
+  try {
+    const res = await axios.get(mediafireUrl, { timeout, maxRedirects: 5, headers: { 'User-Agent': UA, 'Accept-Language': 'en-US,en;q=0.9', Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8' }, validateStatus: () => true })
+    if (res.status >= 200 && res.status < 400) {
+      const $ = cheerio.load(String(res.data || ''))
+      const btn = $('#downloadButton, a#downloadButton').first()
+      const scrambled = btn.attr('data-scrambled-url')
+      let rawHref = btn.attr('href') || null
+      if ((!rawHref || rawHref === '#' || rawHref.startsWith('javascript:')) && scrambled) {
+        try { rawHref = Buffer.from(scrambled, 'base64').toString('utf8') } catch {}
+      }
+      const downloadLink = normalizeUrl(rawHref)
+      if (downloadLink && /^https?:\/\/download/i.test(downloadLink)) {
+        const filename = pickFilename($)
+        const filetype = pickFiletypeText($)
+        const { size, uploaded } = pickDetails($)
+        const type = pickTypeFromFilename(filename) || (filetype ? cleanText(filetype).toLowerCase() : null)
+        return { downloadLink, filename, filetype, size, uploaded, type }
+      }
+    }
+  } catch {}
+
+  // 2. Respaldo multi-API
+  const enc = encodeURIComponent(mediafireUrl)
+  const fallbacks = [
+    async () => {
+      const { data } = await axios.get(`https://api.delirius.online/download/mediafire?url=${enc}`, { timeout: 20000 })
+      const d = Array.isArray(data?.data) ? data.data[0] : data?.data
+      if (!d?.link && !d?.url) return null
+      return { downloadLink: d.link || d.url, filename: d.filename || d.name, size: d.size || null, uploaded: d.uploaded || null, type: d.extension || pickTypeFromFilename(d.filename) }
+    },
+    async () => {
+      const { data } = await axios.get(`https://api.vreden.web.id/api/v1/download/mediafire?url=${enc}`, { timeout: 20000 })
+      const d = Array.isArray(data?.result) ? data.result[0] : data?.result
+      if (!d?.link && !d?.url && !d?.download) return null
+      const filename = d.nama || d.filename || d.name || null
+      return { downloadLink: d.link || d.url || d.download, filename, size: d.size || null, uploaded: d.uploaded || null, type: d.mime || pickTypeFromFilename(filename) }
+    },
+    async () => {
+      const { data } = await axios.get(`https://api.siputzx.my.id/api/d/mediafire?url=${enc}`, { timeout: 20000 })
+      const d = data?.data
+      if (!d?.downloadLink && !d?.url) return null
+      return { downloadLink: d.downloadLink || d.url, filename: d.fileName || d.filename, size: d.fileSize || null, uploaded: d.uploadDate || null, type: pickTypeFromFilename(d.fileName) }
+    }
+  ]
+  for (const fn of fallbacks) {
+    try {
+      const out = await fn()
+      if (out?.downloadLink) return out
+    } catch {}
   }
-  const $ = cheerio.load(String(res.data || ''))
-  const downloadLinkRaw = $('#downloadButton').attr('href') || $('a#downloadButton').attr('href') || null
-  const downloadLink = normalizeUrl(downloadLinkRaw)
-  if (!downloadLink) {
-    throw new Error('Download link not found')
-  }
-  const filename = pickFilename($)
-  const filetype = pickFiletypeText($)
-  const { size, uploaded } = pickDetails($)
-  const type = pickTypeFromFilename(filename) || (filetype ? cleanText(filetype).toLowerCase() : null)
-  return { downloadLink, filename, filetype, size, uploaded, type }
+  throw new Error('No se pudo obtener el enlace de descarga de MediaFire.')
 }

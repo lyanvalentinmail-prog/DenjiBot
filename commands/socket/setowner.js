@@ -3,10 +3,10 @@ export default {
   command: ['setbotowner', 'setowner'],
   category: 'socket',
   description: 'Cambiar el dueño del bot.',
-  run: async ({ msg, sock, args, usedPrefix, command }) => {
-    const idBot = sock.user.id.split(':')[0] + '@s.whatsapp.net';
+  run: async ({ msg, sock, args, usedPrefix, command, isROwner }) => {
+    const idBot = sock.user.id.split('@')[0].split(':')[0] + '@s.whatsapp.net';
     let config = db.getSettings(idBot) || {};
-    const isOwner2 = [idBot, ...(config.owner ? [config.owner] : []), ...global.owner.map(num => num + '@s.whatsapp.net')].includes(msg.sender);
+    const isOwner2 = isROwner || [idBot, ...(config.owner ? [config.owner] : []), ...global.owner.map(num => num + '@s.whatsapp.net')].includes(msg.sender);
     if (!isOwner2) return msg.reply(global.mess.socket);
     const text = args.join(' ').trim();
     const actual = config.owner || '';

@@ -8,7 +8,7 @@ export default {
     const userId = msg.sender;
     db.setCreate('chats', chatId, 'sales', {});
     let chat = db.getChat(chatId);
-    if (chat.adminonly || !chat.gacha) {
+    if (!chat.gacha) {
       return msg.reply(`ꕥ Los comandos de *Gacha* están desactivados en este grupo.\n\nUn *administrador* puede activarlos con:\n» *${usedPrefix}gacha on*`);
     }
     if (chat.sales && typeof chat.sales === 'string') {

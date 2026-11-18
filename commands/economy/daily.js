@@ -5,10 +5,10 @@ export default {
   description: 'Reclamar tu recompensa diaria.',
   run: async ({ msg, sock, usedPrefix }) => {
     const chat = db.getChat(msg.chat);
-    if (chat.adminonly || !chat.economy) {
+    if (!chat.economy) {
       return msg.reply(`ꕥ Los comandos de *Economía* están desactivados en este grupo.\n\nUn *administrador* puede activarlos con el comando:\n» *${usedPrefix}economy on*`);
     }
-    const botId = sock.user.id.split(':')[0] + '@s.whatsapp.net';
+    const botId = sock.user.id.split('@')[0].split(':')[0] + '@s.whatsapp.net';
     const bot = db.getSettings(botId);
     const monedas = bot.currency;    
     db.setCreate('users', msg.sender, 'streak', 0);

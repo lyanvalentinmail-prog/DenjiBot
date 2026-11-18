@@ -2,6 +2,7 @@ export default {
   command: ['revoke', 'restablecer'],
   category: 'group',
   description: 'Restablecer el enlace del grupo.',
+  isAdmin: true,
   botAdmin: true,
   run: async ({ msg, sock, usedPrefix, command }) => {
     try {

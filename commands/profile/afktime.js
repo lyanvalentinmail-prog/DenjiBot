@@ -12,7 +12,7 @@ const formatTiempo = (ms) => {
 };
 
 export async function before({ msg, sock }) {
-  const botJid = sock.user.id.split(':')[0] + '@s.whatsapp.net';
+  const botJid = sock.user.id.split('@')[0].split(':')[0] + '@s.whatsapp.net';
   const chatData = db.getChat(msg.chat);
   const primaryBot = chatData.primaryBot;
   if (primaryBot && botJid !== primaryBot) return;
@@ -46,7 +46,5 @@ export async function before({ msg, sock }) {
     const tiempo = formatTiempo(ms);
     const userData = db.getUser(jid);
     await sock.reply(msg.chat, `ꕥ El usuario *${userData?.name || 'Usuario'}* está AFK.\n> ○ Motivo » *${target.afkReason || 'sin especificar'}*\n> ○ Tiempo inactivo » *${tiempo}*`, msg);
-    msg.isCommands = true;
   }
-  return true;
-};
+}

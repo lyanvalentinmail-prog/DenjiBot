@@ -3,10 +3,10 @@ export default {
   command: ['setlink', 'setbotlink'],
   category: 'socket',
   description: 'Cambiar el enlace del bot.',
-  run: async ({ msg, sock, args }) => {
-    const idBot = sock.user.id.split(':')[0] + '@s.whatsapp.net'
+  run: async ({ msg, sock, args, isROwner }) => {
+    const idBot = sock.user.id.split('@')[0].split(':')[0] + '@s.whatsapp.net'
     const config = db.getSettings(idBot) || {}
-    const isOwner2 = [idBot, ...(config.owner ? [config.owner] : []), ...global.owner.map(num => num + '@s.whatsapp.net')].includes(msg.sender);
+    const isOwner2 = isROwner || [idBot, ...(config.owner ? [config.owner] : []), ...global.owner.map(num => num + '@s.whatsapp.net')].includes(msg.sender);
     if (!isOwner2) return msg.reply(global.mess.socket);
     const value = args.join(' ').trim()
     if (!value) {

@@ -1,5 +1,5 @@
 import db from '#db';
-const growth = Math.pow(Math.PI / Math.E, 1.618) * Math.E * 1.5;
+const growth = Math.pow(Math.PI / Math.E, 1.618) * Math.E * 0.75;
 
 function xpRange(level, multiplier = global.multiplier || 2) {
   if (level < 0) throw new TypeError('level cannot be negative value');

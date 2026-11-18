@@ -103,7 +103,9 @@ export const defUser: Record<string, any> = {
     genre: '',
     birth: '',
     metadatos: null,
-    metadatos2: null
+    metadatos2: null,
+    favorite: '',
+    claimMessage: ''
 };
 
 export const defChat: Record<string, any> = {
@@ -119,7 +121,11 @@ export const defChat: Record<string, any> = {
     primaryBot: null,
     antilinks: 1,
     antistatus: 0,
-    rolls: '{}'
+    rolls: '{}',
+    sales: '{}',
+    warnLimit: 3,
+    expulsar: 0,
+    timeTrade: 0
 };
 
 export const defChatUser: Record<string, any> = {
@@ -135,7 +141,13 @@ export const defChatUser: Record<string, any> = {
     stamina: 100,
     magic: 100,
     characters: '[]',
-    stats: '{}'
+    stats: '{}',
+    favorite: '',
+    inventory: '{}',
+    weapons: '{}',
+    tools: '{}',
+    warnings: '[]',
+    robVictims: '{}'
 };
 
 export const defStickerPack: Record<string, any> = {
@@ -241,6 +253,11 @@ export function initDB(): void {
             id TEXT PRIMARY KEY,
             packs TEXT DEFAULT '[]'
         );
+
+        CREATE TABLE IF NOT EXISTS db_meta (
+            key TEXT PRIMARY KEY,
+            value TEXT
+        );
     `);
 
     columnsCache.clear();
@@ -262,6 +279,18 @@ export function initDB(): void {
         }
         if (columnExists('chats', 'bye')) {
             db.exec(`UPDATE chats SET goodbye = bye WHERE goodbye = 0 AND bye = 1`);
+        }
+        // En versiones previas de Denji bot `chats.economy` tenía DEFAULT 0, lo que dejaba
+        // desactivados todos los comandos de economía en grupos antiguos. Migrar una sola vez.
+        const chatCols = stmt('PRAGMA table_info(chats)').all() as any[];
+        const econCol = chatCols.find(c => c.name === 'economy');
+        const hadZeroDefault = econCol && String(econCol.dflt_value ?? '').trim() === '0';
+        if (hadZeroDefault || columnExists('chats', 'bye') || columnExists('chats', 'muteds')) {
+            const done = db.prepare('SELECT value FROM db_meta WHERE key = ?').get('economy_default_v1');
+            if (!done) {
+                db.exec('UPDATE chats SET economy = 1 WHERE economy = 0');
+                db.prepare('INSERT OR REPLACE INTO db_meta (key, value) VALUES (?, ?)').run('economy_default_v1', '1');
+            }
         }
     } catch (e) {
         console.error('[DB migration error]', e);
@@ -458,8 +487,26 @@ export function getUser(id?: string, opt: { orderBy?: string; limit?: number | n
     return user;
 }
 
+function ensureDynamicColumn(table: string, field: string, value: any): boolean {
+    assertIdent(field);
+    if (columnExists(table, field)) return false;
+    const sqlType = typeof value === 'number' ? 'INTEGER' : typeof value === 'boolean' ? 'BOOLEAN' : 'TEXT';
+    let defaultVal = "''";
+    if (value === null || value === undefined) defaultVal = 'NULL';
+    else if (typeof value === 'number' || typeof value === 'boolean') defaultVal = '0';
+    else if (Array.isArray(value)) defaultVal = "'[]'";
+    else if (typeof value === 'object') defaultVal = "'{}'";
+    db.exec(`ALTER TABLE ${table} ADD COLUMN "${field}" ${sqlType} DEFAULT ${defaultVal}`);
+    columnsCache.get(table)?.add(field);
+    for (const k of [...stmts.keys()]) {
+        if (k.includes(table)) stmts.delete(k);
+    }
+    return true;
+}
+
 export function setUser(id: string, field: string, val: any): any {
     assertIdent(field);
+    ensureDynamicColumn('users', field, val);
     getUser(id);
     const result = stmt(`UPDATE users SET "${field}" = ? WHERE id = ?`).run(toStore(val), id);
     return result.changes ? result : undefined;
@@ -500,6 +547,7 @@ export function getChat(id?: string): any {
 
 export function setChat(id: string, field: string, val: any): any {
     assertIdent(field);
+    ensureDynamicColumn('chats', field, val);
     getChat(id);
     const result = stmt(`UPDATE chats SET "${field}" = ? WHERE id = ?`).run(toStore(val), id);
     return result.changes ? result : undefined;
@@ -568,6 +616,7 @@ export function getChatUser(
 
 export function setChatUser(chatId: string, userId: string, field: string, val: any): any {
     assertIdent(field);
+    ensureDynamicColumn('chat_users', field, val);
     getChatUser(chatId, userId);
     return stmt(`UPDATE chat_users SET "${field}" = ? WHERE chat_id = ? AND user_id = ?`).run(
         toStore(val),
@@ -627,6 +676,7 @@ export function getSettings(id?: string): any {
 
 export function setSettings(id: string, field: string, val: any): any {
     assertIdent(field);
+    ensureDynamicColumn('settings', field, val);
     getSettings(id);
     let stored = val;
     if (val === true) stored = '1';
@@ -666,6 +716,7 @@ export function getStickersPack(id?: string): any {
 
 export function setStickersPack(id: string, field: string, val: any): any {
     assertIdent(field);
+    ensureDynamicColumn('sticker_packs', field, val);
     getStickersPack(id);
     const result = stmt(`UPDATE sticker_packs SET "${field}" = ? WHERE id = ?`).run(toStore(val), id);
     return result.changes ? result : undefined;

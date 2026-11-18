@@ -6,7 +6,7 @@ export default {
   isAdmin: true,
   run: async ({ msg, sock, args }) => {
     const chat = db.getChat(msg.chat);
-    const botId = sock.user.id.split(':')[0] + "@s.whatsapp.net";
+    const botId = sock.user.id.split('@')[0].split(':')[0] + "@s.whatsapp.net";
     const botSettings = db.getSettings(botId) || {};
     const namebot = botSettings.namebot || 'Bot';
     const estado = chat.isBanned ? 1 : 0;

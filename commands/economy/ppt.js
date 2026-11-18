@@ -6,10 +6,10 @@ export default {
   run: async ({ msg, sock, args, usedPrefix, command, text }) => {
     const chatId = msg.chat;
     const chatData = db.getChat(chatId);
-    if (chatData.adminonly || !chatData.economy) {
+    if (!chatData.economy) {
       return msg.reply(`ꕥ Los comandos de *Economía* están desactivados en este grupo.\n\nUn *administrador* puede activarlos con el comando:\n» *${usedPrefix}economy on*`);
     }
-    const botId = sock.user.id.split(':')[0] + '@s.whatsapp.net';    
+    const botId = sock.user.id.split('@')[0].split(':')[0] + '@s.whatsapp.net';    
     const botSettings = db.getSettings(botId);
     const monedas = botSettings.currency;
     const botname = botSettings.namebot;   

@@ -1,5 +1,8 @@
+import fs from 'node:fs';
+import path from 'node:path';
 import { getDevice, prepareWAMessageMedia } from '@whiskeysockets/baileys';
 import config from '#config';
+import { ROOT } from '#settings';
 import db from '#db';
 import {
   listTexts,
@@ -418,23 +421,33 @@ async function sendStyledMenu(sock, msg, text, meta) {
   };
 
   const trimmed = String(text || '').trim();
-  const isVideo = banner && /\.(mp4|webm|gif)(\?.*)?$/i.test(banner);
+  const isHttp = typeof banner === 'string' && /^https?:\/\//i.test(banner);
+  const localFile =
+    !isHttp && typeof banner === 'string' && banner
+      ? path.isAbsolute(banner)
+        ? banner
+        : path.join(ROOT, banner)
+      : '';
+  const hasLocal = Boolean(localFile && fs.existsSync(localFile));
+  const isVideo = typeof banner === 'string' && /\.(mp4|webm|gif)(\?.*)?$/i.test(banner);
 
-  if (isVideo) {
+  if (isVideo && (isHttp || hasLocal)) {
     try {
+      const videoSource = isHttp ? { url: banner } : fs.readFileSync(localFile);
       return await sock.sendMessage(
         msg.chat,
-        { video: { url: banner }, gifPlayback: true, caption: trimmed, contextInfo },
+        { video: videoSource, gifPlayback: true, caption: trimmed, contextInfo },
         { quoted: msg }
       );
     } catch {}
   }
 
-  if (banner && /^https?:\/\//i.test(banner)) {
+  if (isHttp || hasLocal) {
     const targetUrl = link || global.links?.github || 'https://github.com/lyanvalentinmail-prog/DenjiBot';
     try {
+      const imageSource = isHttp ? { url: banner } : fs.readFileSync(localFile);
       const { imageMessage } = await prepareWAMessageMedia(
-        { image: { url: banner } },
+        { image: imageSource },
         { upload: sock.waUploadToServer, mediaTypeOverride: 'thumbnail-link' }
       );
       return await sock.sendMessage(
@@ -469,7 +482,7 @@ export default {
       const theme = appSettings.menuTheme || 'yuki';
       const menuStyle = appSettings.menuStyle || 'lista';
 
-      const botId = sock.user.id.split(':')[0] + '@s.whatsapp.net';
+      const botId = sock.user.id.split('@')[0].split(':')[0] + '@s.whatsapp.net';
       const botSettings = db.getSettings(botId) || {};
       const botname = botSettings.botname || config.botName || 'Denji bot';
       const namebot = botSettings.namebot || botname.split(' ')[0] || 'Denji';
@@ -481,7 +494,7 @@ export default {
       const canalName = botSettings.nameid || botname;
       const devName = config.devName || global.dev || 'Lyan';
 
-      const mainJid = global.sock?.user?.id ? `${global.sock.user.id.split(':')[0]}@s.whatsapp.net` : botId;
+      const mainJid = global.sock?.user?.id ? `${global.sock.user.id.split('@')[0].split(':')[0]}@s.whatsapp.net` : botId;
       const botType = botId === mainJid ? 'Principal' : 'Sub-Bot';
 
       const userRec = db.getUser(msg.sender);
@@ -592,7 +605,15 @@ export default {
             description: `Lista plegable con los ${totalCommands} comandos`,
             id: `${prefix}menu todo`
           });
-          const imageHeader = banner && !/\.(mp4|webm|gif)(\?.*)?$/i.test(banner) ? banner : undefined;
+          let imageHeader;
+          if (banner && !/\.(mp4|webm|gif)(\?.*)?$/i.test(banner)) {
+            if (/^https?:\/\//i.test(banner)) {
+              imageHeader = banner;
+            } else {
+              const p = path.isAbsolute(banner) ? banner : path.join(ROOT, banner);
+              if (fs.existsSync(p)) imageHeader = fs.readFileSync(p);
+            }
+          }
           await sendList(
             sock,
             msg.chat,

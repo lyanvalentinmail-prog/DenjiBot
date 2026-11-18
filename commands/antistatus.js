@@ -2,7 +2,7 @@ import db from '#db';
 export async function before({ msg, sock, groupMetadata, participants, isAdmins, isBotAdmins }) {
   if (!msg.isGroup) return;
   if (msg.isBot) return;
-  const botId = sock.user.id.split(':')[0] + '@s.whatsapp.net';
+  const botId = sock.user.id.split('@')[0].split(':')[0] + '@s.whatsapp.net';
   if (!groupMetadata) return;
   const botSettings = db.getSettings(botId);
   const isSelf = botSettings.self ?? 0;
@@ -17,21 +17,21 @@ export async function before({ msg, sock, groupMetadata, participants, isAdmins,
     let participantToUse = null;
     if (msg.quoted && (msg.quoted.groupStatusMentionMessage || msg.quoted.type === 'groupStatusMentionMessage')) {
       const quotedKey = msg.quoted.key;
-      participantToUse = quotedKey.participantAlt || (quotedKey.participant ? quotedKey.participant.split(':')[0] + '@s.whatsapp.net' : msg.sender);
+      participantToUse = quotedKey.participant || quotedKey.participantAlt || msg.sender;
       deleteObj = { remoteJid: msg.chat, fromMe: false, id: quotedKey.id, participant: participantToUse };
     } else if (msg.message?.groupStatusMentionMessage) {
-      participantToUse = msg.key.participantAlt || (msg.key.participant ? msg.key.participant.split(':')[0] + '@s.whatsapp.net' : msg.sender);
+      participantToUse = msg.key.participant || msg.key.participantAlt || msg.sender;
       deleteObj = { remoteJid: msg.chat, fromMe: false, id: msg.key.id, participant: participantToUse };
     } else if (msg.message?.extendedTextMessage?.contextInfo) {
       const contextInfo = msg.message.extendedTextMessage.contextInfo;
-      if (contextInfo.quotedMessage?.groupStatusMentionMessage || contextInfo.stanzaId) {
-        participantToUse = (contextInfo.participant ? contextInfo.participant.split(':')[0] + '@s.whatsapp.net' : null) || msg.sender;
+      if (contextInfo.quotedMessage?.groupStatusMentionMessage && contextInfo.stanzaId) {
+        participantToUse = contextInfo.participant || msg.sender;
         deleteObj = { remoteJid: msg.chat, fromMe: false, id: contextInfo.stanzaId, participant: participantToUse };
       }
     }
     if (deleteObj) {
       await sock.sendMessage(msg.chat, { delete: deleteObj }).catch(err => console.error('Error al borrar status:', err));
-      const currentParticipant = msg.key.participantAlt || (msg.key.participant ? msg.key.participant.split(':')[0] + '@s.whatsapp.net' : msg.sender);
+      const currentParticipant = msg.key.participant || msg.key.participantAlt || msg.sender;
       const currentDeleteObj = { remoteJid: msg.chat, fromMe: false, id: msg.key.id, participant: currentParticipant };
       if (currentDeleteObj.id !== deleteObj.id) {
         await sock.sendMessage(msg.chat, { delete: currentDeleteObj }).catch(err => console.error('Error al borrar comando actual:', err));

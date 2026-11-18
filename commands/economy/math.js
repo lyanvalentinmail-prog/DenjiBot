@@ -9,10 +9,18 @@ const getOperation = () => ['+', '-', '*', '/'][Math.floor(Math.random() * 4)];
 
 const generarProblema = (dificultad) => {
   const maxLimit = limits[dificultad] || 30;
-  const num1 = generateRandomNumber(maxLimit);
-  const num2 = generateRandomNumber(maxLimit);
   const operador = getOperation();
-  const resultado = eval(`${num1} ${operador} ${num2}`);
+  let num1 = generateRandomNumber(maxLimit);
+  let num2 = generateRandomNumber(maxLimit);
+  let resultado = 0;
+  if (operador === '+') resultado = num1 + num2;
+  else if (operador === '-') resultado = num1 - num2;
+  else if (operador === '*') resultado = num1 * num2;
+  else {
+    num2 = generateRandomNumber(Math.max(2, Math.min(12, maxLimit)));
+    resultado = generateRandomNumber(maxLimit);
+    num1 = num2 * resultado;
+  }
   const simbolo = operador === '*' ? '×' : operador === '/' ? '÷' : operador;
   return { problema: `${num1} ${simbolo} ${num2}`, resultado };
 };
@@ -27,7 +35,7 @@ export default {
     if (!juego?.juegoActivo) return;
     const respuestaUsuario = parseFloat(msg.text?.trim());
     if (isNaN(respuestaUsuario)) return;
-    const botId = sock.user.id.split(':')[0] + '@s.whatsapp.net';
+    const botId = sock.user.id.split('@')[0].split(':')[0] + '@s.whatsapp.net';
     const chat = db.getChat(chatId);
     if (chat.primaryBot && chat.primaryBot !== botId) return;
     const user = db.getChatUser(chatId, msg.sender);
@@ -54,7 +62,7 @@ export default {
   run: async ({ msg, sock, args, usedPrefix, command }) => {
     const chatId = msg.chat;
     const chat = db.getChat(chatId);
-    if (chat.adminonly || !chat.economy) {
+    if (!chat.economy) {
       return msg.reply(`ꕥ Los comandos de *Economía* están desactivados en este grupo.\n\nUn *administrador* puede activarlos con el comando:\n» *${usedPrefix}economy on*`);
     }
     if (global.math[chatId]?.juegoActivo) {

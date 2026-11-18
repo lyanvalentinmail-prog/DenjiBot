@@ -6,7 +6,7 @@ export default {
   isAdmin: true,
   run: async ({ msg, sock, args, usedPrefix, command }) => {
     let chatData = db.getChat(msg.chat);
-    const botId = sock.user.id.split(':')[0] + "@s.whatsapp.net";
+    const botId = sock.user.id.split('@')[0].split(':')[0] + "@s.whatsapp.net";
     const botSettings = db.getSettings(botId) || {};
     const botname = botSettings.botname || 'Bot';
     const stateArg = args[0]?.toLowerCase();

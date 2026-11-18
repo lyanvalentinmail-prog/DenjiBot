@@ -1,224 +1,133 @@
-import fetch from 'node-fetch'
+import axios from 'axios';
+import { DEFAULT_UA } from '#simple';
+
+const FB_REGEX = /https?:\/\/((www|m|web|mbasic)\.)?(facebook\.com|fb\.watch|fb\.com)\/\S+/i;
+
+async function fetchJson(url) {
+  const { data } = await axios.get(url, {
+    timeout: 22_000,
+    headers: { 'User-Agent': DEFAULT_UA, Accept: 'application/json' }
+  });
+  return data;
+}
+
+function unescapeFbUrl(raw = '') {
+  return String(raw)
+    .replace(/\\u0025/g, '%')
+    .replace(/\\u0026/g, '&')
+    .replace(/\\\//g, '/')
+    .replace(/&amp;/g, '&');
+}
+
+async function scrapeDirectFb(url) {
+  const res = await axios.get(url, {
+    timeout: 18_000,
+    maxRedirects: 6,
+    headers: {
+      'User-Agent':
+        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+      Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+      'Accept-Language': 'es-ES,es;q=0.9,en;q=0.8'
+    }
+  });
+  const html = String(res.data || '');
+  const hd = html.match(/"browser_native_hd_url":"((?:\\.|[^"\\])+)"/)?.[1];
+  const sd = html.match(/"browser_native_sd_url":"((?:\\.|[^"\\])+)"/)?.[1];
+  const playableHd = html.match(/"playable_url_quality_hd":"((?:\\.|[^"\\])+)"/)?.[1];
+  const playableSd = html.match(/"playable_url":"((?:\\.|[^"\\])+)"/)?.[1];
+  const chosen = hd || playableHd || sd || playableSd;
+  if (!chosen) return null;
+  const title = html.match(/property="og:title"\s+content="([^"]+)"/i)?.[1] || null;
+  return {
+    url: unescapeFbUrl(chosen),
+    resolution: hd || playableHd ? 'HD' : 'SD',
+    title
+  };
+}
+
+async function getFacebookVideo(url) {
+  const enc = encodeURIComponent(url);
+  const delirius = global.APIs?.delirius?.url || 'https://api.delirius.online';
+  const vreden = global.APIs?.vreden?.url || 'https://api.vreden.web.id';
+  const yuki = global.APIs?.yuki;
+
+  const providers = [
+    async () => {
+      const d = await fetchJson(`${vreden}/api/v1/download/facebook?url=${enc}`);
+      const r = d?.result;
+      const dl = r?.download?.hd || r?.download?.sd || r?.hd_url || r?.sd_url || r?.url;
+      return dl ? { url: dl, resolution: r?.download?.hd || r?.hd_url ? 'HD' : 'SD', title: r?.title } : null;
+    },
+    async () => {
+      const d = await fetchJson(`${delirius}/download/facebook?url=${enc}`);
+      const urls = Array.isArray(d?.urls) ? d.urls : Array.isArray(d?.data) ? d.data : [];
+      const hd = urls.find(x => x?.hd)?.hd;
+      const sd = urls.find(x => x?.sd)?.sd;
+      const anyUrl = hd || sd || d?.data?.hd || d?.data?.sd || d?.data?.url || urls[0]?.url;
+      return anyUrl ? { url: anyUrl, resolution: hd || d?.data?.hd ? 'HD' : 'SD', title: d?.title || d?.data?.title } : null;
+    },
+    async () => {
+      const d = await fetchJson(`https://api.siputzx.my.id/api/d/facebook?url=${enc}`);
+      const list = Array.isArray(d?.data) ? d.data : [];
+      const hd = list.find(x => /hd|720|1080/i.test(String(x?.resolution || '')))?.url;
+      const anyUrl = hd || list[0]?.url || d?.data?.url;
+      return anyUrl ? { url: anyUrl, resolution: hd ? 'HD' : 'SD', title: d?.data?.title } : null;
+    },
+    async () => {
+      const d = await fetchJson(`https://api.ryuzei.xyz/download/facebook?url=${enc}`);
+      const r = d?.result || d?.data;
+      const dl = r?.hd || r?.sd || r?.url || (Array.isArray(r) ? r[0]?.url : null);
+      return dl ? { url: dl, resolution: r?.hd ? 'HD' : 'SD', title: r?.title } : null;
+    },
+    async () => {
+      if (!yuki?.url) return null;
+      const d = await fetchJson(`${yuki.url}/dl/facebook?url=${enc}&key=${yuki.key}`);
+      const r = d?.data || d?.result;
+      const dl = r?.hd || r?.sd || r?.url || (Array.isArray(r?.result) ? r.result[0]?.url : null);
+      return dl ? { url: dl, resolution: r?.hd ? 'HD' : 'SD', title: r?.title } : null;
+    },
+    () => scrapeDirectFb(url)
+  ];
+
+  for (const fn of providers) {
+    try {
+      const out = await fn();
+      if (out?.url && /^https?:\/\//i.test(out.url)) return out;
+    } catch {}
+  }
+  return null;
+}
 
 export default {
-  command: ['fb', 'facebook'],
+  command: ['fb', 'facebook', 'fbdl'],
   category: 'downloads',
-  description: 'Descargar un video de Facebook.',
+  description: 'Descargar videos y reels de Facebook.',
   run: async ({ msg, sock, args, usedPrefix, command }) => {
-    if (!args[0]) {
-      return msg.reply('《✧》 Por favor, Ingrese un enlace de Facebook.')
+    const raw = args.join(' ').trim();
+    if (!raw) {
+      return msg.reply('《✧》 Por favor, ingresa un enlace de Facebook.');
     }
-    if (!args[0].match(/facebook\.com|fb\.watch|video\.fb\.com/)) {
-      return msg.reply('《✧》 El enlace es invalido, envía un link de Facebook válido')
+    const url = raw.match(FB_REGEX)?.[0] || '';
+    if (!url) {
+      return msg.reply('《✧》 El enlace no parece válido. Asegúrate de que sea un video o reel de Facebook.');
     }
     try {
-      const data = await getFacebookMedia(args[0])
-      if (!data) return msg.reply('《✧》 No se pudo obtener el contenido.')
-      const caption = `ㅤ۟∩　ׅ　★　ׅ　🅕𝖡 🅓ownload　ׄᰙ　\n\n${data.title ? `𖣣ֶㅤ֯⌗ ☆  ׄ ⬭ *Titulo* › ${data.title}\n` : ''}${data.resolution ? `𖣣ֶㅤ֯⌗ ☆  ׄ ⬭ *Resolución* › ${data.resolution}\n` : ''}${data.format ? `𖣣ֶㅤ֯⌗ ☆  ׄ ⬭ *Formato* › ${data.format}\n` : ''}${data.duration ? `𖣣ֶㅤ֯⌗ ☆  ׄ ⬭ *Duración* › ${data.duration}\n` : ''}𖣣ֶㅤ֯⌗ ☆  ׄ ⬭ *Enlace* › ${args[0]}`
-      if (data.type === 'video') {
-        await sock.sendMessage(msg.chat, { video: { url: data.url }, caption, mimetype: 'video/mp4', fileName: 'fb.mp4' }, { quoted: msg })
-      } else if (data.type === 'image') {
-        await sock.sendMessage(msg.chat, { image: { url: data.url }, caption }, { quoted: msg })
-      } else {
-        throw new Error('Contenido no soportado.')
+      const data = await getFacebookVideo(url);
+      if (!data?.url) {
+        return msg.reply('《✧》 No se pudo obtener el video. Verifica que la publicación sea pública.');
       }
+      const caption =
+        `ㅤ۟∩　ׅ　★ ໌　ׅ　🅕𝖺𝖼𝖾𝖻𝗈𝗈𝗄 🅓ownload　ׄᰙ\n\n` +
+        (data.title ? `𖣣ֶㅤ֯⌗ ❀  ⬭ *Título* › ${String(data.title).slice(0, 250)}\n` : '') +
+        (data.resolution ? `𖣣ֶㅤ֯⌗ ❀  ⬭ *Calidad* › ${data.resolution}\n` : '') +
+        `𖣣ֶㅤ֯⌗ ❀  ⬭ *Enlace* › ${url}`;
+      await sock.sendMessage(
+        msg.chat,
+        { video: { url: data.url }, mimetype: 'video/mp4', fileName: 'facebook.mp4', caption },
+        { quoted: msg }
+      );
     } catch (e) {
-      await msg.reply(`> An unexpected error occurred while executing command *${usedPrefix + command}*. Please try again or contact support if the issue persists.\n> [Error: *${e.message}*]`)
+      await msg.reply(`> Error al ejecutar *${usedPrefix + command}*.\n> [Error: *${e.message}*]`);
     }
   }
-}
-
-const RE_URL = /(?:https?:\/\/)?(?:www\.|m\.|web\.|l\.)?facebook\.com\/[^\s<>"']+|fb\.watch\/[^\s<>"']+/i
-const RE_ID = /\/reel\/(\d+)|[?&]v=(\d+)|\/videos\/(\d+)/
-const RE_SHORT = /\/share\/(?:v|r|p)\/|fb\.watch\//
-
-const HDR = {
-  accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
-  'accept-language': 'es-ES,es;q=0.9,en;q=0.8',
-  'cache-control': 'no-cache',
-  pragma: 'no-cache',
-  'sec-fetch-dest': 'document',
-  'sec-fetch-mode': 'navigate',
-  'sec-fetch-site': 'none',
-  'sec-fetch-user': '?1',
-  'upgrade-insecure-requests': '1',
-  'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36'
-}
-
-const fb = async (url, { headers = {}, timeout = 45e3, binary = false } = {}) => {
-  const controller = new AbortController()
-  const timer = setTimeout(() => controller.abort(), timeout)
-
-  try {
-    const res = await fetch(url, {
-      redirect: 'follow',
-      headers: { ...HDR, ...headers },
-      signal: controller.signal
-    })
-
-    const body = binary ? Buffer.from(await res.arrayBuffer()) : await res.text()
-    return { status: res.status, url: res.url, body }
-  } finally {
-    clearTimeout(timer)
-  }
-}
-
-const reelPage = id => `https://www.facebook.com/reel/${id}`
-const reelId = u => (u.match(RE_ID) || []).slice(1).find(Boolean)
-
-const unesc = s => String(s || '')
-  .replace(/\\u([0-9a-f]{4})/gi, (_, h) => String.fromCharCode(parseInt(h, 16)))
-  .replace(/\\\//g, '/')
-
-const decodeHtml = s => String(s || '')
-  .replace(/&amp;/g, '&')
-  .replace(/&#x([0-9a-f]+);/gi, (_, h) => String.fromCodePoint(parseInt(h, 16)))
-  .replace(/&#(\d+);/g, (_, d) => String.fromCodePoint(parseInt(d, 10)))
-  .replace(/&quot;/g, '"')
-  .replace(/&#39;/g, "'")
-  .replace(/&lt;/g, '<')
-  .replace(/&gt;/g, '>')
-  .replace(/&nbsp;/g, ' ')
-  .trim()
-
-const parseNum = v => {
-  if (v == null || v === '') return null
-  const n = parseFloat(String(v).replace(/[^\d.,KMB]/gi, '').replace(',', '.'))
-  if (Number.isNaN(n)) return null
-  const u = String(v).toUpperCase()
-  if (/K|MIL/.test(u)) return Math.round(n * 1e3)
-  if (/M/.test(u)) return Math.round(n * 1e6)
-  return Math.round(n)
-}
-
-const fromTitle = (t, k) => parseNum(t?.match(new RegExp(`([\\d.,]+)\\s*(mil|k|m)?\\s*${k}`, 'i'))?.[0])
-const beforePost = (h, pid, re) => h.match(new RegExp(`${re.source}[\\s\\S]{0,8000}?"post_id":"${pid}"`))?.[1]
-
-function parseStats(h, id) {
-  const ogT = h.match(/property="og:title" content="([^"]+)"/i)?.[1]
-  const ogD = h.match(/property="og:description" content="([^"]+)"/i)?.[1]
-  const pid = h.match(new RegExp(`"video":\\{"id":"${id}"[\\s\\S]{0,12000}?"post_id":"(\\d+)"`))?.[1]
-    || h.match(/"post_id":"(\d+)"/)?.[1]
-  const last = ogT?.split('|').pop()?.trim()
-
-  const s = {
-    reelId: id,
-    url: reelPage(id),
-    description: decodeHtml(ogD || (last && !/views|reproducciones|reactions|reacciones/i.test(last) ? last : null)),
-    views: +(h.match(/"(?:play|video_view|view)_count":(\d+)/)?.[1] || '') || fromTitle(ogT, 'reproducciones|views?'),
-    reactions: pid ? +(beforePost(h, pid, /"unified_reactors":\{"count":(\d+)/) || '') : null,
-    comments: pid ? +(beforePost(h, pid, /"total_comment_count":(\d+)/) || '') : null,
-    shares: pid ? parseNum(beforePost(h, pid, /"share_count_reduced":"([^"]+)"/)) : null,
-    ownerId: h.match(new RegExp(`facebook\\.com/(\\d+)/videos/[^"']*${id}`))?.[1],
-  }
-
-  if (!s.reactions) s.reactions = fromTitle(ogT, 'reacciones|reactions?')
-  if (!s.views) s.views = fromTitle(ogT, 'reproducciones|views?')
-  return s
-}
-
-function parseVideo(h, id) {
-  const c = h.includes(`"id":"${id}"`)
-    ? h.slice(h.indexOf(`"id":"${id}"`), h.indexOf(`"id":"${id}"`) + 25e3)
-    : h
-
-  const m = re => (c.match(re) || h.match(re))?.[1]
-
-  return decodeHtml(unesc(
-    m(/"browser_native_hd_url":"((?:\\.|[^"\\])+)"/) ||
-    m(/"browser_native_sd_url":"((?:\\.|[^"\\])+)"/) ||
-    ''
-  ))
-}
-
-async function getReel(text) {
-  const raw = String(text || '').trim()
-  const link = (raw.match(RE_URL)?.[0] || raw.split(/\s+/)[0])?.replace(/[.,;:!?)]+$/g, '')
-  if (!link) return null
-
-  const source = link.startsWith('http') ? link : `https://${link}`
-  let id = reelId(source)
-  let html
-  let lastError
-
-  if (!id && RE_SHORT.test(source)) {
-    try {
-      const r = await fb(source)
-      id = reelId(r.url) || r.body.match(/\/reel\/(\d+)/)?.[1]
-      html = r.body
-    } catch (e) {
-      lastError = e
-    }
-
-    if (!id) return null
-  }
-
-  if (!id) return null
-
-  const url = reelPage(id)
-
-  const pages = [...new Set([
-    source,
-    url,
-    `https://m.facebook.com/reel/${id}`,
-    `https://web.facebook.com/reel/${id}`,
-    `https://www.facebook.com/watch/?v=${id}`,
-    `https://m.facebook.com/watch/?v=${id}`
-  ])]
-
-  if (!html || !parseVideo(html, id)) {
-    html = null
-
-    for (const page of pages) {
-      try {
-        const r = await fb(page)
-
-        if (/login|two_step_verification/i.test(r.url)) {
-          lastError = new Error('Reel privado o requiere login')
-          continue
-        }
-
-        if (
-          r.body &&
-          (
-            r.status === 200 ||
-            r.body.includes(`"id":"${id}"`) ||
-            r.body.includes('browser_native_hd_url') ||
-            r.body.includes('browser_native_sd_url')
-          )
-        ) {
-          html = r.body
-          break
-        }
-
-        lastError = new Error(`HTTP ${r.status}`)
-      } catch (e) {
-        lastError = e
-      }
-    }
-  }
-
-  if (!html) throw lastError || new Error('No se pudo abrir el reel')
-
-  const stats = parseStats(html, id)
-  stats.sourceUrl = source !== url ? source : undefined
-  stats.videoUrl = parseVideo(html, id)
-
-  return stats
-}
-
-async function getFacebookMedia(url) {
-  const target = await getReel(url)
-
-  if (!target?.videoUrl) return null
-
-  return {
-    type: 'video',
-    title: decodeHtml(target.description || 'Facebook Video'),
-    resolution: 'HD',
-    format: 'mp4',
-    url: target.videoUrl,
-    thumbnail: null,
-    duration: null
-  }
-}
+};

@@ -1,127 +1,168 @@
 import axios from 'axios';
 import db from '#db';
+import { uploadMedia, DEFAULT_UA } from '#simple';
 
-const langs = { typescript: 'ts', javascript: 'js', python: 'py', html: 'html', css: 'css', java: 'java', cpp: 'cpp', c: 'c', json: 'json', bash: 'sh', sql: 'sql', rust: 'rs', go: 'go', php: 'php', ruby: 'rb' };
+const langs = {
+  typescript: 'ts', javascript: 'js', python: 'py', html: 'html', css: 'css',
+  java: 'java', cpp: 'cpp', c: 'c', json: 'json', bash: 'sh', sql: 'sql',
+  rust: 'rs', go: 'go', php: 'php', ruby: 'rb'
+};
 
 function detectLanguage(query, response) {
   const q = query.toLowerCase();
-  const r = response;
-  if (/typescript/i.test(q)) return 'typescript';
-  if (/\bpython\b/i.test(q)) return 'python';
-  if (/\bhtml\b/i.test(q)) return 'html';
-  if (/\bcss\b/i.test(q)) return 'css';
-  if (/\bjava\b(?!script)/i.test(q)) return 'java';
-  if (/\bc\+\+|cpp\b/i.test(q)) return 'cpp';
-  if (/\bjson\b/i.test(q)) return 'json';
-  if (/\bbash\b|\bshell\b/i.test(q)) return 'bash';
-  if (/\bsql\b/i.test(q)) return 'sql';
-  if (/\brust\b/i.test(q)) return 'rust';
-  if (/\bgolang\b|\bgo\b/i.test(q)) return 'go';
-  if (/\bphp\b/i.test(q)) return 'php';
-  if (/\bruby\b/i.test(q)) return 'ruby';
-  if (/javascript/i.test(q)) return 'javascript';
-  const asksCode = /(c[oó]digo|code|programa|script|funci[oó]n|clase|m[eé]todo|algoritmo|actualiza|edita|crea|implementa)/i.test(q);
+  const asksCode = /(c[oó]digo|code|programa|script|funci[oó]n|clase|algoritmo|implementa)/i.test(q);
   if (!asksCode) return null;
-  if (/def |import \w+\n|print\s*\(|:\n\s{4}/i.test(r)) return 'python';
-  if (/<html|<div|<body|<span|<head/i.test(r)) return 'html';
-  if (/\{[\s\S]*color:|margin:|padding:|font-/i.test(r)) return 'css';
-  if (/public\s+class|System\.out\.print/i.test(r)) return 'java';
-  if (/#include\s*<|int main\s*\(/i.test(r)) return 'cpp';
-  if (/SELECT |INSERT |UPDATE |DELETE |CREATE TABLE/i.test(r)) return 'sql';
-  if (/fn main\(\)|let mut |println!\(/i.test(r)) return 'rust';
-  if (/func \w+\(|package main|fmt\.Print/i.test(r)) return 'go';
-  if (/<\?php|\$[a-z_]+\s*=/i.test(r)) return 'php';
-  if (/def initialize|\.each do |puts /i.test(r)) return 'ruby';
-  if (/\{["'][\w]+["']\s*:/i.test(r) && !/function|const|let|var/.test(r)) return 'json';
-  if (/function|class\s+\w|const |let |var |=>|\bimport\b|\bexport\b|console\.log/i.test(r)) {
-    return /:\s*(string|number|boolean|void|any)\b|interface\s+\w|<\w+>/i.test(r) ? 'typescript' : 'javascript';
+  for (const name of Object.keys(langs)) {
+    if (q.includes(name)) return name;
+  }
+  if (/def |print\s*\(/i.test(response)) return 'python';
+  if (/<html|<div|<body/i.test(response)) return 'html';
+  if (/SELECT |INSERT |CREATE TABLE/i.test(response)) return 'sql';
+  if (/function|const |let |=>|\bimport\b|\bexport\b/i.test(response)) return 'javascript';
+  return null;
+}
+
+async function queryAI(text, systemPrompt, sender, imageUrl) {
+  const encText = encodeURIComponent(text);
+  const encPrompt = encodeURIComponent(systemPrompt);
+  const delirius = global.APIs?.delirius?.url || 'https://api.delirius.online';
+  const vreden = global.APIs?.vreden?.url || 'https://api.vreden.web.id';
+  const yuki = global.APIs?.yuki;
+
+  const providers = [
+    async () => {
+      const body = { content: text, user: sender, prompt: systemPrompt, model: 'gemini' };
+      if (imageUrl) body.imageBuffer = imageUrl;
+      const { data } = await axios.post('https://ai.siputzx.my.id', body, {
+        timeout: 25_000,
+        headers: { 'User-Agent': DEFAULT_UA, 'Content-Type': 'application/json' }
+      });
+      return typeof data?.result === 'string' && data.result.trim() ? data.result : null;
+    },
+    async () => {
+      const { data } = await axios.get(`${delirius}/ia/gptprompt?text=${encText}&prompt=${encPrompt}`, {
+        timeout: 25_000,
+        headers: { 'User-Agent': DEFAULT_UA }
+      });
+      const ans = data?.data || data?.result;
+      return typeof ans === 'string' && ans.trim() && !/^Error:/i.test(ans) ? ans : null;
+    },
+    async () => {
+      const { data } = await axios.get(`${delirius}/ia/chatgpt?q=${encText}`, {
+        timeout: 25_000,
+        headers: { 'User-Agent': DEFAULT_UA }
+      });
+      const ans = data?.data || data?.result;
+      return typeof ans === 'string' && ans.trim() && !/^Error:/i.test(ans) ? ans : null;
+    },
+    async () => {
+      const { data } = await axios.post(
+        'https://text.pollinations.ai/openai',
+        {
+          model: 'openai',
+          messages: [
+            { role: 'system', content: systemPrompt },
+            ...(imageUrl
+              ? [{ role: 'user', content: [{ type: 'text', text }, { type: 'image_url', image_url: { url: imageUrl } }] }]
+              : [{ role: 'user', content: text }])
+          ]
+        },
+        { timeout: 30_000, headers: { 'Content-Type': 'application/json', 'User-Agent': DEFAULT_UA } }
+      );
+      const ans = data?.choices?.[0]?.message?.content;
+      return typeof ans === 'string' && ans.trim() ? ans : null;
+    },
+    async () => {
+      const { data } = await axios.get(`${vreden}/api/v1/artificial/chatgpt?query=${encText}`, {
+        timeout: 25_000,
+        headers: { 'User-Agent': DEFAULT_UA }
+      });
+      const ans = data?.result?.answer || data?.result;
+      return typeof ans === 'string' && ans.trim() ? ans : null;
+    },
+    async () => {
+      if (!yuki?.url) return null;
+      const { data } = await axios.get(`${yuki.url}/ai/gptprompt?text=${encText}&prompt=${encPrompt}&key=${yuki.key}`, {
+        timeout: 25_000
+      });
+      const ans = data?.result?.text || data?.result || data?.results;
+      return typeof ans === 'string' && ans.trim() ? ans : null;
+    }
+  ];
+
+  for (const fn of providers) {
+    try {
+      const res = await fn();
+      if (res) return res.trim();
+    } catch {}
   }
   return null;
 }
 
-async function uploadToUguu(buffer, mimetype = 'image/jpeg') {
-  try {
-    const body = new FormData();
-    const extension = mimetype.split('/')[1]?.split(';')[0] || 'jpg';
-    body.append('files[]', new Blob([buffer], { type: mimetype }), `file.${extension}`);
-    const res = await globalThis.fetch('https://uguu.se/upload.php', { method: 'POST', body });
-    const json = await res.json();
-    return json.files?.[0]?.url ?? null;
-  } catch {
-    return null;
-  }
-}
-
 export default {
-  command: ['ia', 'chatgpt'],
+  command: ['ia', 'chatgpt', 'ai', 'gpt'],
   category: 'utils',
-  description: 'Realizar peticiones a ChatGPT.',
+  description: 'Realizar peticiones a la inteligencia artificial.',
   run: async ({ msg, sock, args, usedPrefix, command }) => {
-    const text = args.join(' ').trim();
+    const text = (args.join(' ').trim() || (!msg.quoted?.isMedia ? msg.quoted?.text?.trim() : '') || '').trim();
     if (!text) {
-      return msg.reply(`《✧》 Escriba una *petición* para que *ChatGPT* le responda.`);
+      return msg.reply('《✧》 Escribe una pregunta o petición para que la *IA* te responda.');
     }
-    const botId = sock.user.id.split(':')[0] + '@s.whatsapp.net';
+    const botId = sock.user.id.split('@')[0].split(':')[0] + '@s.whatsapp.net';
     const settings = db.getSettings(botId);
     const user = db.getUser(msg.sender);
-    const username = user?.name || 'usuario';
-    const botname = settings.botname || 'Bot';
+    const username = user?.name || msg.pushName || 'usuario';
+    const botname = settings.botname || global.botName || 'Denji bot';
     const devName = global.dev || 'Lyan';
-    const basePrompt = `Tu nombre es ${botname} y fuiste creado por ${devName}. Tu versión actual es @latest, usas el idioma Español. Llamarás a las personas por su nombre ${username}, te gusta ser divertido y te encanta aprender. Lo más importante es que debes ser amigable con la persona con la que estás hablando: ${username}.`;
+    const basePrompt = `Tu nombre es ${botname}, creado por ${devName}. Respondes siempre en español de forma clara, amigable y útil. Estás hablando con ${username}.`;
+
     try {
-      const { key } = await sock.sendMessage(msg.chat, { text: `ꕥ *ChatGPT* está procesando tu respuesta...` }, { quoted: msg });
-      await msg.react('🕒');
-      let responseText = null;
-      let imageBuffer = null;
-      let isImage = false;
-      if (msg.quoted && (msg.quoted.message?.imageMessage || msg.quoted.message?.videoMessage)) {
-        isImage = true;
-        const media = msg.quoted.message?.imageMessage || msg.quoted.message?.videoMessage;
-        const buffer = await sock.downloadMediaMessage(msg.quoted);
-        if (buffer) {
-          const uploadUrl = await uploadToUguu(buffer, media.mimetype);
-          if (uploadUrl) imageBuffer = uploadUrl;
+      let imageUrl = null;
+      const mediaSrc = msg.quoted?.isMedia ? msg.quoted : msg.isMedia ? msg : null;
+      if (mediaSrc && /^image\/(jpe?g|png|webp)$/i.test(mediaSrc.mimetype || '')) {
+        try {
+          const buf = await mediaSrc.download();
+          if (buf?.length) {
+            const up = await uploadMedia(buf);
+            imageUrl = up.url;
+          }
+        } catch {}
+      }
+
+      const sent = await sock.sendMessage(
+        msg.chat,
+        { text: `ꕥ *${botname}* está pensando tu respuesta...` },
+        { quoted: msg }
+      );
+
+      const answer = await queryAI(text, basePrompt, msg.sender, imageUrl);
+      if (!answer) {
+        const failMsg = '《✧》 No se pudo obtener una respuesta en este momento. Intenta de nuevo.';
+        if (sent?.key) {
+          await sock.sendMessage(msg.chat, { text: failMsg, edit: sent.key }).catch(() => msg.reply(failMsg));
+        } else {
+          await msg.reply(failMsg);
         }
+        return;
       }
-      try {
-        const requestBody = { content: text, user: msg.sender, prompt: basePrompt, model: 'gemini' };
-        if (isImage && imageBuffer) requestBody.imageBuffer = imageBuffer;
-        const res = await axios.post('https://ai.siputzx.my.id', requestBody);
-        if (res.data?.result) responseText = res.data.result;
-      } catch {}
-      if (!responseText) {
-        try {
-          const res = await fetch(`${global.APIs.yuki.url}/ai/gptprompt?text=${encodeURIComponent(text)}&prompt=${encodeURIComponent(basePrompt)}&key=${global.APIs.yuki.key}`);
-          const json = await res.json();
-          if (json?.result?.text) responseText = json.result.text;
-          else if (json?.result) responseText = json.result;
-          else if (json?.results) responseText = json.results;
-        } catch {}
-      }
-      if (!responseText) {
-        try {
-          const res = await fetch(`${global.APIs.delirius.url}/ia/gptprompt?text=${encodeURIComponent(text)}&prompt=${encodeURIComponent(basePrompt)}`);
-          const json = await res.json();
-          if (json?.status && json?.data && json.data !== 'Error: No response') responseText = json.data;
-        } catch {}
-      }
-      if (!responseText) {
-        return sock.reply(msg.chat, '《✧》 No se pudo obtener una *respuesta* válida', msg);
-      }
-      const clean = responseText.trim();
-      const lang = detectLanguage(text, clean);
-      if (lang) {
+
+      const lang = detectLanguage(text, answer);
+      if (lang && !answer.includes('```')) {
         const ext = langs[lang] ?? 'txt';
-        const filename = `ꕥ respuesta.${ext}`;
-        const tableData = { title: '✎ ChatGPT', headers: ['Campo', 'Valor'], rows: [ ['Lenguaje', lang], ['Líneas', String(clean.split('\n').length)], ['Caracteres', String(clean.length)], ], };
-        await sock.sendMessage(msg.chat, { text: `ꕥ *ChatGPT* · respuesta en *${lang}*`, edit: key });
-        await sock.sendCodeMessage(msg.chat, filename, clean, msg, tableData);
+        const header = `ꕥ *${botname}* · \`respuesta.${ext}\``;
+        if (sent?.key) {
+          await sock.sendMessage(msg.chat, { text: `${header}\n\n\`\`\`\n${answer}\n\`\`\``, edit: sent.key })
+            .catch(() => sock.sendCodeMessage(msg.chat, header, answer, msg));
+        } else {
+          await sock.sendCodeMessage(msg.chat, header, answer, msg);
+        }
+      } else if (sent?.key) {
+        await sock.sendMessage(msg.chat, { text: answer, edit: sent.key }).catch(() => msg.reply(answer));
       } else {
-        await sock.sendMessage(msg.chat, { text: clean, edit: key });
+        await msg.reply(answer);
       }
-      await msg.react('✔️');
     } catch (e) {
-      await msg.reply(`> An unexpected error occurred while executing command *${usedPrefix + command}*. Please try again or contact support if the issue persists.\n> [Error: *${e.message}*]`);
+      await msg.reply(`> Error al ejecutar *${usedPrefix + command}*.\n> [Error: *${e.message}*]`);
     }
-  },
+  }
 };

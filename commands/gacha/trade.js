@@ -50,17 +50,20 @@ export default {
       db.setCharacter(keyB, pB);
       let sender = db.getChatUser(chatId, data.from);
       let receiver = db.getChatUser(chatId, data.to);
-      if (!receiver.characters.includes(data.give)) receiver.characters.push(data.give);
-      if (!sender.characters.includes(data.get)) sender.characters.push(data.get);
-      sender.characters = sender.characters.filter(id => id !== data.give);
-      receiver.characters = receiver.characters.filter(id => id !== data.get);
+      const giveId = String(data.give);
+      const getId = String(data.get);
+      if (!receiver.characters.map(String).includes(giveId)) receiver.characters.push(giveId);
+      if (!sender.characters.map(String).includes(getId)) sender.characters.push(getId);
+      sender.characters = sender.characters.filter(id => String(id) !== giveId);
+      receiver.characters = receiver.characters.filter(id => String(id) !== getId);
       db.setChatUser(chatId, data.from, 'characters', sender.characters);
       db.setChatUser(chatId, data.to, 'characters', receiver.characters);
-      if (sender.favorite === data.give) {
+      db.setChat(chatId, 'timeTrade', 0);
+      if (String(sender.favorite) === giveId) {
         db.setChatUser(chatId, data.from, 'favorite', '');
         db.setUser(data.from, 'favorite', '');
       }
-      if (receiver.favorite === data.get) {
+      if (String(receiver.favorite) === getId) {
         db.setChatUser(chatId, data.to, 'favorite', '');
         db.setUser(data.to, 'favorite', '');
       }
@@ -81,7 +84,7 @@ export default {
       db.setCreate('chats', chatId, 'intercambios', []);
       db.setCreate('chats', chatId, 'timeTrade', 0);
       const chat = db.getChat(chatId);
-      if (chat.adminonly || !chat.gacha) {
+      if (!chat.gacha) {
         return msg.reply(`ꕥ Los comandos de *Gacha* están desactivados en este grupo.\n\nUn *administrador* puede activarlos con el comando:\n» *${usedPrefix}gacha on*`);
       }
       if (chat.timeTrade && chat.timeTrade - Date.now() > 0) {

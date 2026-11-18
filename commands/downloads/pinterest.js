@@ -1,170 +1,230 @@
-import fetch from 'node-fetch'
+import axios from 'axios';
+import { DEFAULT_UA } from '#simple';
+
+const PIN_URL_REGEX = /^https?:\/\/(([a-z]{2,3}|www)\.)?(pinterest\.[a-z.]+|pin\.it)\/.+/i;
+
+async function fetchJson(url) {
+  const { data } = await axios.get(url, {
+    timeout: 22_000,
+    headers: { 'User-Agent': DEFAULT_UA, Accept: 'application/json' }
+  });
+  return data;
+}
+
+async function getPinterestDownload(url) {
+  const enc = encodeURIComponent(url);
+  const delirius = global.APIs?.delirius?.url || 'https://api.delirius.online';
+  const vreden = global.APIs?.vreden?.url || 'https://api.vreden.web.id';
+  const yuki = global.APIs?.yuki;
+
+  const providers = [
+    async () => {
+      const res = await fetchJson(`${delirius}/download/pinterestdl?url=${enc}`);
+      const d = res?.data;
+      const dl = d?.download?.url || d?.video || d?.image || d?.url;
+      if (!dl) return null;
+      const isVideo = /video|\.mp4/i.test(`${d?.download?.type || ''} ${dl}`);
+      return {
+        type: isVideo ? 'video' : 'image',
+        url: dl,
+        title: d?.title || null,
+        author: d?.author_name || d?.username || null,
+        likes: d?.likes || null
+      };
+    },
+    async () => {
+      const res = await fetchJson(`${vreden}/api/v1/download/pinterest?url=${enc}`);
+      const r = res?.result;
+      const media = Array.isArray(r?.media) ? r.media[0] : r;
+      const dl = media?.url || r?.url || r?.video || r?.image;
+      if (!dl) return null;
+      return {
+        type: /\.mp4/i.test(dl) || /video/i.test(media?.type || '') ? 'video' : 'image',
+        url: dl,
+        title: r?.title || null,
+        author: r?.author || null
+      };
+    },
+    async () => {
+      const res = await fetchJson(`https://api.siputzx.my.id/api/d/pinterest?url=${enc}`);
+      const d = res?.data;
+      const dl = d?.url || (Array.isArray(d?.media_urls) ? d.media_urls[0]?.url : null);
+      if (!dl) return null;
+      return {
+        type: /\.mp4/i.test(dl) ? 'video' : 'image',
+        url: dl,
+        title: d?.title || null
+      };
+    },
+    async () => {
+      if (!yuki?.url) return null;
+      const res = await fetchJson(`${yuki.url}/dl/pinterest?url=${enc}&key=${yuki.key}`);
+      const d = res?.data || res?.result;
+      const dl = d?.url || d?.video || d?.image;
+      if (!dl) return null;
+      return { type: /\.mp4/i.test(dl) ? 'video' : 'image', url: dl, title: d?.title || null };
+    },
+    async () => {
+      const res = await fetchJson(`https://fare.ink/dl/pin?url=${enc}`);
+      const d = res?.resultado;
+      if (!d?.url) return null;
+      const isVideo = /\.mp4/i.test(d.filename || d.url);
+      return { type: isVideo ? 'video' : 'image', url: d.url, title: d.titulo || null, author: d.autor || null };
+    }
+  ];
+
+  for (const fn of providers) {
+    try {
+      const out = await fn();
+      if (out?.url && /^https?:\/\//i.test(out.url)) return out;
+    } catch {}
+  }
+  return null;
+}
+
+async function getPinterestSearch(query) {
+  const enc = encodeURIComponent(query);
+  const delirius = global.APIs?.delirius?.url || 'https://api.delirius.online';
+  const vreden = global.APIs?.vreden?.url || 'https://api.vreden.web.id';
+  const yuki = global.APIs?.yuki;
+
+  const providers = [
+    async () => {
+      const res = await fetchJson(`${delirius}/search/pinterestv2?text=${enc}`);
+      const list = Array.isArray(res?.data) ? res.data : [];
+      return list
+        .filter(d => d?.image)
+        .map(d => ({
+          type: 'image',
+          image: d.image,
+          title: d.title || d.description || null,
+          name: d.name || null,
+          username: d.username || null,
+          likes: d.likes || null,
+          created_at: d.created_at || null
+        }));
+    },
+    async () => {
+      const res = await fetchJson(`${vreden}/api/v1/search/pinterest?query=${enc}`);
+      const raw = res?.result?.search_data || res?.result;
+      const list = Array.isArray(raw) ? raw : [];
+      return list
+        .map(d => (typeof d === 'string' ? { type: 'image', image: d } : {
+          type: 'image',
+          image: d?.image || d?.images_url || d?.media?.images?.orig?.url || d?.url,
+          title: d?.title || d?.grid_title || null,
+          username: d?.pinner?.username || d?.username || null
+        }))
+        .filter(d => d.image && /^https?:\/\//i.test(d.image));
+    },
+    async () => {
+      const res = await fetchJson(`https://api.siputzx.my.id/api/s/pinterest?query=${enc}`);
+      const list = Array.isArray(res?.data) ? res.data : [];
+      return list
+        .map(d => ({
+          type: 'image',
+          image: d?.images_url || d?.image || d?.pin,
+          title: d?.grid_title || d?.title || null,
+          created_at: d?.created_at || null,
+          url: d?.pin || null
+        }))
+        .filter(d => d.image && /^https?:\/\//i.test(d.image));
+    },
+    async () => {
+      if (!yuki?.url) return [];
+      const res = await fetchJson(`${yuki.url}/search/pinterest?q=${enc}&key=${yuki.key}`);
+      const list = Array.isArray(res?.data) ? res.data : Array.isArray(res?.results) ? res.results : [];
+      return list
+        .map(d => ({
+          type: /\.mp4/i.test(d?.image || d?.url || '') ? 'video' : 'image',
+          image: d?.image || d?.images_url || d?.descarga || d?.url,
+          title: d?.title || d?.titulo || null,
+          name: d?.author || d?.autor || null
+        }))
+        .filter(d => d.image && /^https?:\/\//i.test(d.image));
+    },
+    async () => {
+      const res = await fetchJson(`https://fare.ink/search/pin?q=${enc}&limit=15`);
+      const list = Array.isArray(res?.results) ? res.results : [];
+      return list
+        .filter(d => d?.descarga)
+        .map(d => ({
+          type: /video|\.mp4/i.test(`${d.tipo || ''} ${d.descarga}`) ? 'video' : 'image',
+          image: d.descarga,
+          title: d.titulo || null,
+          name: d.autor || null,
+          likes: d.likes || null,
+          url: d.url || null
+        }));
+    }
+  ];
+
+  for (const fn of providers) {
+    try {
+      const out = await fn();
+      if (Array.isArray(out) && out.length) return out;
+    } catch {}
+  }
+  return [];
+}
 
 export default {
-  command: ['pinterest', 'pin'],
+  command: ['pinterest', 'pin', 'pimg'],
   category: 'downloads',
-  description: 'Buscar y descarga imágenes y videos de Pinterest.',
+  description: 'Buscar y descargar imágenes y videos de Pinterest.',
   run: async ({ msg, sock, args, usedPrefix, command }) => {
-    const text = args.join(' ')
-    const isPinterestUrl = /^https?:\/\//.test(text)
-
+    const text = args.join(' ').trim();
     if (!text) {
-      return msg.reply('《✧》 Por favor, ingresa un término de búsqueda o un enlace de Pinterest.')
+      return msg.reply('《✧》 Por favor, ingresa un término de búsqueda o un enlace de Pinterest.');
     }
 
     try {
-      if (isPinterestUrl) {
-        const data = await getPinterestDownload(text)
+      if (PIN_URL_REGEX.test(text)) {
+        const data = await getPinterestDownload(text);
+        if (!data?.url) return msg.reply('ꕥ No se pudo obtener el contenido de ese enlace de Pinterest.');
 
-        if (!data) return msg.reply('ꕥ No se pudo obtener el contenido.')
-
-        const caption = `ㅤ۟∩　ׅ　★　ׅ　🅟𝖨𝖭 🅓ownload　ׄᰙ　\n\n${data.title ? `𖣣ֶㅤ֯⌗ ☆  ⬭ *Título* › ${data.title}\n` : ''}${data.description ? `𖣣ֶㅤ֯⌗ ☆  ⬭ *Descripción* › ${data.description}\n` : ''}${data.author ? `𖣣ֶㅤ֯⌗ ☆  ⬭ *Autor* › ${data.author}\n` : ''}${data.username ? `𖣣ֶㅤ֯⌗ ☆  ⬭ *Usuario* › ${data.username}\n` : ''}${data.followers ? `𖣣ֶㅤ֯⌗ ☆  ⬭ *Seguidores* › ${data.followers}\n` : ''}${data.uploadDate ? `𖣣ֶㅤ֯⌗ ☆  ⬭ *Fecha* › ${data.uploadDate}\n` : ''}${data.likes ? `𖣣ֶㅤ֯⌗ ☆  ⬭ *Likes* › ${data.likes}\n` : ''}${data.comments ? `𖣣ֶㅤ֯⌗ ☆  ⬭ *Comentarios* › ${data.comments}\n` : ''}${data.views ? `𖣣ֶㅤ֯⌗ ☆  ⬭ *Vistas* › ${data.views}\n` : ''}${data.saved ? `𖣣ֶㅤ֯⌗ ☆  ⬭ *Guardados* › ${data.saved}\n` : ''}${data.format ? `𖣣ֶㅤ֯⌗ ☆  ⬭ *Formato* › ${data.format}\n` : ''}𖣣ֶㅤ֯⌗ ☆  ⬭ *Enlace* › ${text}`
+        const caption =
+          `ㅤ۟∩　ׅ　★　ׅ　🅟𝖨𝖭 🅓ownload　ׄᰙ\n\n` +
+          (data.title ? `𖣣ֶㅤ֯⌗ ☆  ⬭ *Título* › ${data.title}\n` : '') +
+          (data.author ? `𖣣ֶㅤ֯⌗ ☆  ⬭ *Autor* › ${data.author}\n` : '') +
+          (data.likes ? `𖣣ֶㅤ֯⌗ ☆  ⬭ *Likes* › ${data.likes}\n` : '') +
+          `𖣣ֶㅤ֯⌗ ☆  ⬭ *Enlace* › ${text}`;
 
         if (data.type === 'video') {
           await sock.sendMessage(
             msg.chat,
-            {
-              video: { url: data.url },
-              caption,
-              mimetype: 'video/mp4',
-              fileName: data.filename || 'pin.mp4'
-            },
+            { video: { url: data.url }, caption, mimetype: 'video/mp4', fileName: 'pinterest.mp4' },
             { quoted: msg }
-          )
-        } else if (data.type === 'image') {
-          await sock.sendMessage(
-            msg.chat,
-            {
-              image: { url: data.url },
-              caption
-            },
-            { quoted: msg }
-          )
+          );
         } else {
-          throw new Error('Contenido no soportado.')
+          await sock.sendMessage(msg.chat, { image: { url: data.url }, caption }, { quoted: msg });
         }
-      } else {
-        const results = await getPinterestSearch(text)
-
-        if (!results || results.length === 0) {
-          return msg.reply(`《✧》 No se encontraron resultados para *${text}*.`)
-        }
-
-        const medias = results
-          .slice(0, 10)
-          .filter(r => r.image)
-          .map(r => ({
-            type: r.type === 'video' ? 'video' : 'image',
-            data: { url: r.image },
-            caption: `ㅤ۟∩　ׅ　★　ׅ　🅟𝖨𝖭 🅢earch　ׄᰙ　\n\n${r.title ? `𖣣ֶㅤ֯⌗ ☆  ⬭ *Título* › ${r.title}\n` : ''}${r.description ? `𖣣ֶㅤ֯⌗ ☆  ⬭ *Descripción* › ${r.description}\n` : ''}${r.name ? `𖣣ֶㅤ֯⌗ ☆  ⬭ *Autor* › ${r.name}\n` : ''}${r.username ? `𖣣ֶㅤ֯⌗ ☆  ⬭ *Usuario* › ${r.username}\n` : ''}${r.followers ? `𖣣ֶㅤ֯⌗ ☆  ⬭ *Seguidores* › ${r.followers}\n` : ''}${r.likes ? `𖣣ֶㅤ֯⌗ ☆  ⬭ *Likes* › ${r.likes}\n` : ''}${r.created_at ? `𖣣ֶㅤ֯⌗ ☆  ⬭ *Fecha* › ${r.created_at}\n` : ''}${r.url ? `𖣣ֶㅤ֯⌗ ☆  ⬭ *Enlace* › ${r.url}\n` : ''}`
-          }))
-
-        if (!medias.length) {
-          return msg.reply(`《✧》 No se pudieron obtener descargas válidas para *${text}*.`)
-        }
-
-        await sock.sendAlbumMessage(msg.chat, medias, { quoted: msg })
+        return;
       }
+
+      const results = await getPinterestSearch(text);
+      if (!results.length) {
+        return msg.reply(`《✧》 No se encontraron resultados para *${text}*.`);
+      }
+
+      // Mezclar ligeramente para variedad y enviar hasta 8 resultados
+      const shuffled = results.sort(() => Math.random() - 0.5).slice(0, 8);
+      const medias = shuffled.map(r => ({
+        type: r.type === 'video' ? 'video' : 'image',
+        data: { url: r.image },
+        caption:
+          `ㅤ۟∩　ׅ　★　ׅ　🅟𝖨𝖭 🅢earch　ׄᰙ\n\n` +
+          (r.title ? `𖣣ֶㅤ֯⌗ ☆  ⬭ *Título* › ${String(r.title).slice(0, 180)}\n` : '') +
+          (r.name ? `𖣣ֶㅤ֯⌗ ☆  ⬭ *Autor* › ${r.name}\n` : '') +
+          (r.username ? `𖣣ֶㅤ֯⌗ ☆  ⬭ *Usuario* › @${r.username}\n` : '') +
+          (r.likes ? `𖣣ֶㅤ֯⌗ ☆  ⬭ *Likes* › ${r.likes}\n` : '') +
+          (r.created_at ? `𖣣ֶㅤ֯⌗ ☆  ⬭ *Fecha* › ${r.created_at}\n` : '') +
+          `𖣣ֶㅤ֯⌗ ☆  ⬭ *Búsqueda* › ${text}`
+      }));
+
+      await sock.sendAlbumMessage(msg.chat, medias, { quoted: msg });
     } catch (e) {
-      await msg.reply(`> An unexpected error occurred while executing command *${usedPrefix + command}*. Please try again or contact support if the issue persists.\n> [Error: *${e.message}*]`)
+      await msg.reply(`> Error al ejecutar *${usedPrefix + command}*.\n> [Error: *${e.message}*]`);
     }
   }
-}
-
-async function getPinterestDownload(url) {
-  const endpoint = `https://fare.ink/dl/pin?url=${encodeURIComponent(url)}`
-
-  try {
-    const res = await fetchJson(endpoint)
-
-    if (!res.status || !res.resultado?.url) return null
-
-    const data = res.resultado
-    const filename = data.filename || ''
-    const mediaUrl = data.url || ''
-    const isVideo = /\.mp4(?:$|\?)/i.test(filename) || /\.mp4(?:$|\?)/i.test(mediaUrl)
-    const ext = filename.split('.').pop() || (isVideo ? 'mp4' : 'jpg')
-
-    return {
-      type: isVideo ? 'video' : 'image',
-      id: data.id || null,
-      title: data.titulo || null,
-      description: null,
-      author: data.autor || null,
-      username: null,
-      followers: null,
-      uploadDate: null,
-      likes: null,
-      comments: null,
-      views: null,
-      saved: null,
-      format: ext,
-      url: mediaUrl,
-      thumbnail: data.thumbnail || mediaUrl,
-      filename: filename || `pinterest.${ext}`
-    }
-  } catch {
-    return null
-  }
-}
-
-async function getPinterestSearch(query) {
-  const endpoint = `https://fare.ink/search/pin?q=${encodeURIComponent(query)}&limit=20`
-
-  try {
-    const res = await fetchJson(endpoint)
-
-    if (!res.status || !Array.isArray(res.results) || !res.results.length) return []
-
-    return res.results
-      .filter(d => d?.descarga)
-      .map(d => {
-        const tipo = String(d.tipo || '').toLowerCase()
-        const descarga = d.descarga || null
-        const isVideo = tipo === 'video' || /\.mp4(?:$|\?)/i.test(descarga || '')
-
-        return {
-          type: isVideo ? 'video' : 'image',
-          title: d.titulo || null,
-          description: null,
-          name: d.autor || null,
-          username: null,
-          followers: null,
-          likes: d.likes || null,
-          created_at: null,
-          image: descarga,
-          url: d.url || null,
-          source: d.url || null
-        }
-      })
-  } catch {
-    return []
-  }
-}
-
-async function fetchJson(url, timeout = 30000) {
-  const controller = new AbortController()
-  const timer = setTimeout(() => controller.abort(), timeout)
-
-  try {
-    const res = await fetch(url, {
-      signal: controller.signal,
-      headers: {
-        accept: 'application/json',
-        'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/149.0.0.0 Safari/537.36'
-      }
-    })
-
-    if (!res.ok) {
-      throw new Error(`HTTP ${res.status}`)
-    }
-
-    return await res.json()
-  } finally {
-    clearTimeout(timer)
-  }
-}
-
-function sleep(ms) {
-  return new Promise(resolve => setTimeout(resolve, ms))
-}
+};

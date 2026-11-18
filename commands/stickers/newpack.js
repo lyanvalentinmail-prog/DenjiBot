@@ -5,7 +5,7 @@ export default {
   description: 'Crear un nuevo paquete de stickers.',
   run: async ({ msg, sock, args, usedPrefix, command }) => {
     try {
-      const settings = db.getSettings(sock.user.id.split(':')[0] + '@s.whatsapp.net') || {}
+      const settings = db.getSettings(sock.user.id.split('@')[0].split(':')[0] + '@s.whatsapp.net') || {}
       const userId = db.getUser(msg.sender)
       const dev = userId.name || msg.pushName || 'Desconocido'
       const name = args.join(' ').trim()

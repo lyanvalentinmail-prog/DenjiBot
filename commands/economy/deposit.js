@@ -5,10 +5,10 @@ export default {
   description: 'Depositar tus coins en el banco.',
   run: async ({ msg, sock, args, usedPrefix }) => {
     const chatData = db.getChat(msg.chat);
-    if (chatData.adminonly || !chatData.economy) {
+    if (!chatData.economy) {
       return msg.reply(`ꕥ Los comandos de *Economía* están desactivados en este grupo.\n\nUn *administrador* puede activarlos con el comando:\n» *${usedPrefix}economy on*`);
     }    
-    const idBot = sock.user.id.split(':')[0] + '@s.whatsapp.net';
+    const idBot = sock.user.id.split('@')[0].split(':')[0] + '@s.whatsapp.net';
     const settings = db.getSettings(idBot);
     const monedas = settings.currency;
     const user = db.getChatUser(msg.chat, msg.sender);

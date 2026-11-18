@@ -3,10 +3,10 @@ export default {
   command: ['self'],
   category: 'socket',
   description: 'Hacer privado o público tu bot.',
-  run: async ({ msg, sock, args }) => {
-    const idBot = sock.user.id.split(':')[0] + '@s.whatsapp.net';
+  run: async ({ msg, sock, args, isROwner }) => {
+    const idBot = sock.user.id.split('@')[0].split(':')[0] + '@s.whatsapp.net';
     let config = db.getSettings(idBot) || {};
-    const isOwner2 = [idBot, ...(config.owner ? [config.owner] : []), ...global.owner.map(num => num + '@s.whatsapp.net')].includes(msg.sender);
+    const isOwner2 = isROwner || [idBot, ...(config.owner ? [config.owner] : []), ...global.owner.map(num => num + '@s.whatsapp.net')].includes(msg.sender);
     if (!isOwner2) return msg.reply(global.mess.socket);
     const estado = config.self ? 1 : 0;
     if (args[0] === 'enable' || args[0] === 'on') {

@@ -27,5 +27,5 @@ const limpiarRolls = async () => {
   }
 };
 
-setInterval(limpiarRolls, 1800000);
+setInterval(limpiarRolls, 1800000).unref();
 limpiarRolls();

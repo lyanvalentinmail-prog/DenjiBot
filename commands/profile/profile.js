@@ -1,4 +1,7 @@
+import fs from 'fs';
+import path from 'path';
 import db from '#db';
+import { ROOT, DEFAULT_BANNER } from '#settings';
 
 const growth = Math.pow(Math.PI / Math.E, 1.618) * Math.E * 0.75;
 
@@ -22,11 +25,11 @@ export default {
     if (!user) {
       return msg.reply('✎ El usuario *mencionado* no está *registrado* en el bot');
     }
-    const idBot = sock.user.id.split(':')[0] + '@s.whatsapp.net' || '';
+    const idBot = sock.user.id.split('@')[0].split(':')[0] + '@s.whatsapp.net' || '';
     const settings = db.getSettings(idBot) || {};
     const currency = settings.currency || '';
     const user2 = db.getUser(userId) || {};
-    const name = user2.name || '';
+    const name = user2.name || (userId === msg.sender ? msg.pushName : '') || userId.split('@')[0] || 'Usuario';
     const birth = user2.birth || 'Sin especificar';
     const genero = user2.genre || 'Oculto';
     const comandos = user2.usedcommands || '0';    
@@ -46,7 +49,7 @@ export default {
     const favId = user.favorite;
     let favLine = '';
     if (favId) {
-      const character = db.getCharacter(favId);
+      const character = db.getCharacter(`${msg.chat}__${favId}`) || db.getCharacter(favId);
       if (character) {
         favLine = `\n๑ Claim favorito » *${character.name || '???'}*`;
       }
@@ -54,13 +57,13 @@ export default {
     const ownedIDs = Array.isArray(user.characters) ? user.characters : [];
     let haremValue = 0;    
     for (const id of ownedIDs) {
-      const character = db.getCharacter(id);
+      const character = db.getCharacter(`${msg.chat}__${id}`) || db.getCharacter(id);
       if (character) {
         haremValue += character.value || 0;
       }
     }    
     const haremCount = ownedIDs.length;
-    const perfil = await sock.profilePictureUrl(userId, 'image').catch((_) => 'https://cdn.yuki-wabot.my.id/files/2PVh.jpeg');    
+    const perfilUrl = await sock.profilePictureUrl(userId, 'image').catch(() => null);    
     const allUsers = db.getUser() || [];
     const users = Array.isArray(allUsers) ? allUsers.map(u => ({ ...u, jid: u.id })) : [];
     const sortedLevel = users.sort((a, b) => (b.level || 0) - (a.level || 0));    
@@ -85,7 +88,14 @@ export default {
 ♤ Valor total › *${haremValue.toLocaleString()}*${favLine}
 ⛁ Coins totales › *¥${totalCoins.toLocaleString()} ${currency}*
 ❒ Comandos ejecutados › *${comandos.toLocaleString()}*`;     
-      await sock.sendMessage(msg.chat, { image: { url: perfil }, caption: profileText }, { quoted: msg });
+      const localBanner = path.join(ROOT, DEFAULT_BANNER);
+      if (perfilUrl) {
+        await sock.sendMessage(msg.chat, { image: { url: perfilUrl }, caption: profileText }, { quoted: msg });
+      } else if (fs.existsSync(localBanner)) {
+        await sock.sendMessage(msg.chat, { image: fs.readFileSync(localBanner), caption: profileText }, { quoted: msg });
+      } else {
+        await sock.reply(msg.chat, profileText, msg);
+      }
     } catch (e) {
       return msg.reply(`> An unexpected error occurred while executing command *${usedPrefix + command}*. Please try again or contact support if the issue persists.\n> [Error: *${e.message}*]`);
     }

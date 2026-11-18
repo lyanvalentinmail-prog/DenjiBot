@@ -22,16 +22,16 @@ export default {
   description: 'Votar por un personaje para subir su valor.',
   run: async ({ msg, sock, args, usedPrefix, command }) => {
     try {
-      const botId = sock.user.id.split(':')[0] + '@s.whatsapp.net';
+      const botId = sock.user.id.split('@')[0].split(':')[0] + '@s.whatsapp.net';
       const settings = db.getSettings(botId);
-      const isOficialBot = botId === ((global.sock?.user?.id?.split(':')[0] ?? null) && ((global.sock?.user?.id?.split(':')[0] ?? null) && (global.sock.user.id.split(':')[0] + '@s.whatsapp.net')));
+      const isOficialBot = botId === ((global.sock?.user?.id?.split(':')[0] ?? null) && ((global.sock?.user?.id?.split(':')[0] ?? null) && (global.sock.user.id.split('@')[0].split(':')[0] + '@s.whatsapp.net')));
       const isPremiumBot = settings?.botprem === 1;
       const isModBot = settings?.botmod === 1;
       if (!isOficialBot && !isPremiumBot && !isModBot) {
         return sock.reply(msg.chat, `《✧》El comando *${command}* no está disponible en *Sub-Bots.*`, msg);
       }
       const chat = db.getChat(msg.chat);
-      if (chat.adminonly || !chat.gacha) {
+      if (!chat.gacha) {
         return msg.reply(`ꕥ Los comandos de *Gacha* están desactivados en este grupo.\n\nUn *administrador* puede activarlos con el comando:\n» *${usedPrefix}gacha on*`);
       }
       db.setCreate('users', msg.sender, 'lastVote', 0);

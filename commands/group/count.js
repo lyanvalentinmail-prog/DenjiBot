@@ -10,7 +10,7 @@ export default {
     if (!user) {
       return msg.reply(`「✎」 El usuario mencionado no está registrado en el bot.`);
     }    
-    let userStats = user.stats;
+    const userStats = user.stats && typeof user.stats === 'object' ? user.stats : {};
     const now = new Date();
     const daysArg = parseInt(args[0]) || 30;
     const cutoff = new Date(now.getTime() - daysArg * 24 * 60 * 60 * 1000);

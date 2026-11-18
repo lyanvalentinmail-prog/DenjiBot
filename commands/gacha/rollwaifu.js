@@ -68,7 +68,7 @@ export default {
       rollLocks.delete(userId);
     }
     let chat = db.getChat(chatId);
-    if (chat.adminonly || !chat.gacha) {
+    if (!chat.gacha) {
       return msg.reply(`ꕥ Los comandos de *Gacha* están desactivados en este grupo.\n\nUn *administrador* puede activarlos con el comando:\n» *${usedPrefix}gacha on*`);
     }
     db.setCreate('chat_users', [chatId, userId], 'lastRoll', 0);
