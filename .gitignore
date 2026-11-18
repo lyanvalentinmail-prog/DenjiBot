@@ -6,6 +6,7 @@ yarn.lock
 # Datos locales del bot (no se suben ni se pisan con git pull)
 sessions/
 Session/
+Sessions/
 database/
 settings.json
 logs/

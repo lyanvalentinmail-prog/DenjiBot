@@ -13,16 +13,16 @@ import { fileURLToPath } from 'node:url';
 export const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 export const SETTINGS_FILE = path.join(ROOT, 'settings.json');
 export const SESSIONS_DIR = path.join(ROOT, 'sessions');
+export const SUBS_DIR = path.join(ROOT, 'Sessions', 'Subs');
 export const DATABASE_DIR = path.join(ROOT, 'database');
+export const TMP_DIR = path.join(ROOT, 'tmp');
 export const DEFAULT_BANNER = 'assets/banner.jpg';
 
-/** Formato del menú: lista interactiva o todo en un mensaje de texto. */
-export type MenuStyle = 'lista' | 'texto';
-/** Estilo (diseño) del menú. */
-export type MenuTheme = 'denji' | 'chainsaw' | 'simple';
+/** Formato del menú: lista interactiva, resumen de categorías o lista completa plegada. */
+export type MenuStyle = 'lista' | 'categorias' | 'texto';
+/** Estilo (diseño visual) del menú. */
+export type MenuTheme = 'yuki' | 'denji' | 'chainsaw' | 'simple';
 export type LogMode = 'detallado' | 'compacto' | 'apagado';
-/** Cómo responde el comando de la hora: vista HTML en el chat, imagen, las dos cosas o archivo. */
-export type ClockView = 'auto' | 'chat' | 'imagen' | 'archivo';
 
 /** Momentos en los que el bot reacciona al mensaje de quien usa un comando. */
 export type ReactionEvent = 'wait' | 'done' | 'error' | 'denied' | 'unknown';
@@ -47,21 +47,26 @@ export interface Settings {
     /** Banner propio de cada estilo de menú; vacío = banner principal. */
     menuBanners: Record<MenuTheme, string>;
     reactions: Reactions;
-    clockView: ClockView;
-    /**
-     * Servidores de mensajes (MQTT sobre `wss://`) por los que los juegos HTML
-     * guardan el progreso y se conectan entre sí. Lista vacía = sin conexión:
-     * los juegos se guardan solo con el código de `.canjear`.
-     */
-    gameServers: string[];
     logMode: LogMode;
     autoRestart: boolean;
     activeSession: string;
 }
 
-export const MENU_STYLES: MenuStyle[] = ['lista', 'texto'];
-export const MENU_THEMES: MenuTheme[] = ['denji', 'chainsaw', 'simple'];
+export const MENU_STYLES: MenuStyle[] = ['lista', 'categorias', 'texto'];
+export const MENU_STYLE_NAMES: Record<MenuStyle, string> = {
+    lista: 'Lista interactiva',
+    categorias: 'Resumen por categorías',
+    texto: 'Menú completo compacto'
+};
+export const MENU_STYLE_HINTS: Record<MenuStyle, string> = {
+    lista: 'Envía una tarjeta corta con botón desplegable para elegir categoría (el más limpio).',
+    categorias: 'Muestra solo el índice de categorías en texto ligero; se abre cada sección con .menu <categoría>.',
+    texto: 'Envía todos los comandos resumidos en una línea por comando, plegados con "Leer más".'
+};
+
+export const MENU_THEMES: MenuTheme[] = ['yuki', 'denji', 'chainsaw', 'simple'];
 export const MENU_THEME_NAMES: Record<MenuTheme, string> = {
+    yuki: 'Yuki style',
     denji: 'Denji style',
     chainsaw: 'Chainsaw man style',
     simple: 'Simple style'
@@ -84,42 +89,23 @@ export const REACTION_EVENT_HINTS: Record<ReactionEvent, string> = {
 };
 export const MAX_COMMAND_REACTIONS = 100;
 
-export const CLOCK_VIEWS: ClockView[] = ['auto', 'chat', 'imagen', 'archivo'];
-export const CLOCK_VIEW_NAMES: Record<ClockView, string> = {
-    auto: 'Reloj en vivo + imagen',
-    chat: 'Solo reloj en vivo',
-    imagen: 'Solo imagen',
-    archivo: 'Archivo .html'
-};
-export const CLOCK_VIEW_HINTS: Record<ClockView, string> = {
-    auto: 'Envía el reloj HTML dentro del chat y, debajo, una imagen del reloj. La imagen se ve en cualquier WhatsApp, así que siempre hay un reloj a la vista.',
-    chat: 'Envía solo el reloj HTML dentro del chat y un texto con la hora. Elígelo si en tu WhatsApp el reloj en vivo se ve bien y la imagen te sobra.',
-    imagen: 'Envía solo la imagen del reloj. Elígelo si en tu WhatsApp el reloj en vivo no aparece.',
-    archivo: 'Envía el reloj como archivo .html, que se abre con el navegador del teléfono.'
-};
 export const LOG_MODES: LogMode[] = ['detallado', 'compacto', 'apagado'];
 
 export const defaultSettings: Settings = {
     botName: 'Denji bot',
-    devName: 'Ryuzei-Ts',
+    devName: 'Denji Dev',
     prefix: '.',
-    coin: '¥enes',
+    coin: 'Yenes',
     owners: [],
     banner: DEFAULT_BANNER,
     menuStyle: 'lista',
-    menuTheme: 'denji',
-    menuBanners: { denji: '', chainsaw: '', simple: '' },
+    menuTheme: 'yuki',
+    menuBanners: { yuki: '', denji: '', chainsaw: '', simple: '' },
     reactions: {
         enabled: true,
         events: { wait: '🕘', done: '⭐️', error: '', denied: '', unknown: '' },
         commands: {}
     },
-    clockView: 'auto',
-    gameServers: [
-        'wss://broker.emqx.io:8084/mqtt',
-        'wss://broker.hivemq.com:8884/mqtt',
-        'wss://test.mosquitto.org:8081/mqtt'
-    ],
     logMode: 'detallado',
     autoRestart: true,
     activeSession: 'principal'
@@ -161,7 +147,6 @@ function normalizeReactions(raw: any): Reactions {
     if (src.events && typeof src.events === 'object') {
         for (const event of REACTION_EVENTS) {
             const value = src.events[event];
-            // Un texto vacío es válido: significa "sin reacción".
             if (value === '') events[event] = '';
             else if (value !== undefined) events[event] = cleanEmoji(value) || d.events[event];
         }
@@ -214,12 +199,6 @@ export function normalizeSettings(raw: any): Settings {
         menuTheme: MENU_THEMES.includes(src.menuTheme) ? src.menuTheme : d.menuTheme,
         menuBanners: normalizeMenuBanners(src.menuBanners),
         reactions: normalizeReactions(src.reactions),
-        clockView: CLOCK_VIEWS.includes(src.clockView) ? src.clockView : d.clockView,
-        gameServers: Array.isArray(src.gameServers)
-            ? Array.from(new Set<string>(src.gameServers
-                .filter((url: any) => typeof url === 'string' && /^wss?:\/\/[^\s"'<>]+$/i.test(url.trim()))
-                .map((url: string) => url.trim()))).slice(0, 5)
-            : [...d.gameServers],
         logMode: LOG_MODES.includes(src.logMode) ? src.logMode : d.logMode,
         autoRestart: typeof src.autoRestart === 'boolean' ? src.autoRestart : d.autoRestart,
         activeSession: typeof src.activeSession === 'string' && isValidSessionName(src.activeSession)

@@ -34,15 +34,16 @@ async function runPanel(): Promise<void> {
     const { bot, isRunning, startBot, stopBot, restartBot, killBotNow, panelLog } = await import('./lib/panel/bot.ts');
     const {
         ROOT, loadSettings, saveSettings, resetSettings, cleanNumber, isValidSessionName,
-        DEFAULT_BANNER, LOG_MODES, MENU_THEMES, MENU_THEME_NAMES, REACTION_EVENTS, REACTION_EVENT_NAMES,
-        REACTION_EVENT_HINTS, MAX_COMMAND_REACTIONS, CLOCK_VIEWS, CLOCK_VIEW_NAMES, CLOCK_VIEW_HINTS,
+        DEFAULT_BANNER, LOG_MODES, MENU_STYLES, MENU_STYLE_NAMES, MENU_STYLE_HINTS,
+        MENU_THEMES, MENU_THEME_NAMES, REACTION_EVENTS, REACTION_EVENT_NAMES,
+        REACTION_EVENT_HINTS, MAX_COMMAND_REACTIONS,
         cleanEmoji, cleanCommandName
     } = await import('./lib/settings.ts');
     const { sampleMenu } = await import('./lib/menustyles.ts');
 
+    type MenuStyle = (typeof MENU_STYLES)[number];
     type MenuTheme = (typeof MENU_THEMES)[number];
     type ReactionEvent = (typeof REACTION_EVENTS)[number];
-    type ClockView = (typeof CLOCK_VIEWS)[number];
     const { listSessions, readSession, deleteSession, migrateLegacySession } = await import('./lib/sessions.ts');
     const { collectStats } = await import('./lib/stats.ts');
 
@@ -1170,7 +1171,7 @@ async function runPanel(): Promise<void> {
     }
 
     async function customizeScreen(): Promise<void> {
-        type Item = 'style' | 'menu' | 'reactions' | 'clock' | 'name' | 'prefix' | 'coin' | 'dev' | 'owners' | 'banner' | 'logs' | 'restart' | 'reset' | 'back';
+        type Item = 'style' | 'menu' | 'reactions' | 'name' | 'prefix' | 'coin' | 'dev' | 'owners' | 'banner' | 'logs' | 'restart' | 'reset' | 'back';
         let index = 0;
 
         while (true) {
@@ -1178,7 +1179,7 @@ async function runPanel(): Promise<void> {
             const r = s.reactions;
             const items: { label: string; hint: string; value: Item; key: string }[] = [
                 { label: 'Estilo del menú', hint: MENU_THEME_NAMES[s.menuTheme], value: 'style', key: '1' },
-                { label: 'Formato del menú', hint: s.menuStyle === 'lista' ? 'Lista interactiva' : 'Texto clásico', value: 'menu', key: '2' },
+                { label: 'Formato del menú', hint: MENU_STYLE_NAMES[s.menuStyle], value: 'menu', key: '2' },
                 { label: 'Reacciones', hint: r.enabled ? `${r.events.wait || '—'} espera ${r.events.done || '—'} listo` : 'desactivadas', value: 'reactions', key: '3' },
                 { label: 'Nombre del bot', hint: s.botName, value: 'name', key: '4' },
                 { label: 'Prefijo', hint: s.prefix, value: 'prefix', key: '5' },
@@ -1186,7 +1187,6 @@ async function runPanel(): Promise<void> {
                 { label: 'Desarrollador', hint: s.devName, value: 'dev', key: '7' },
                 { label: 'Dueños', hint: s.owners.length ? s.owners.map(phone).join(', ') : 'ninguno', value: 'owners', key: '8' },
                 { label: 'Banner principal', hint: s.banner, value: 'banner', key: '9' },
-                { label: 'Reloj (.hora)', hint: CLOCK_VIEW_NAMES[s.clockView], value: 'clock', key: 'h' },
                 { label: 'Logs de mensajes', hint: s.logMode, value: 'logs', key: 'l' },
                 { label: 'Reinicio automático', hint: s.autoRestart ? 'activado' : 'desactivado', value: 'restart', key: 'a' },
                 { label: 'Restablecer todo', hint: 'Valores iniciales', value: 'reset', key: 'r' },
@@ -1211,37 +1211,24 @@ async function runPanel(): Promise<void> {
             } else if (choice === 'reactions') {
                 await reactionsScreen();
             } else if (choice === 'menu') {
-                const style = await select<'lista' | 'texto' | null>({
+                const style = await select<MenuStyle | null>({
                     header: () => [
                         ...title('Personalizar › Formato del menú'),
                         ...para(`Cómo responde el bot al comando ${s.prefix}menu:`)
                     ],
                     options: [
-                        { label: 'Lista interactiva', hint: 'Botón de categorías', value: 'lista', key: '1' },
-                        { label: 'Texto clásico', hint: 'Todo en un mensaje', value: 'texto', key: '2' },
+                        ...MENU_STYLES.map((item, i) => ({
+                            label: MENU_STYLE_NAMES[item],
+                            value: item as MenuStyle | null,
+                            key: String(i + 1)
+                        })),
                         { label: 'Volver', value: null, key: '0' }
                     ],
-                    initial: s.menuStyle === 'lista' ? 0 : 1,
+                    initial: Math.max(0, MENU_STYLES.indexOf(s.menuStyle)),
+                    preview: value => (value ? para(MENU_STYLE_HINTS[value], c.dim) : []),
                     back: null
                 });
                 if (style) saveSettings({ menuStyle: style });
-            } else if (choice === 'clock') {
-                const view = await select<ClockView | null>({
-                    header: () => [
-                        ...title('Personalizar › Reloj'),
-                        ...para(`Qué envía el bot con el comando ${s.prefix}hora:`),
-                        '',
-                        ...para('El reloj en vivo solo lo dibuja la aplicación de WhatsApp del teléfono, y no en todas las cuentas. En WhatsApp Web y Escritorio no aparece.', c.dim)
-                    ],
-                    options: [
-                        ...CLOCK_VIEWS.map((value, i) => ({ label: CLOCK_VIEW_NAMES[value], value: value as ClockView | null, key: String(i + 1) })),
-                        { label: 'Volver', value: null, key: '0' }
-                    ],
-                    initial: Math.max(0, CLOCK_VIEWS.indexOf(s.clockView)),
-                    preview: value => (value ? para(CLOCK_VIEW_HINTS[value], c.dim) : []),
-                    back: null
-                });
-                if (view) saveSettings({ clockView: view });
             } else if (choice === 'name') {
                 const value = await editText('Nombre del bot', 'Nuevo nombre del bot', 'Aparece en el menú, stickers y mensajes.', s.botName, 40);
                 if (value) saveSettings({ botName: value });
@@ -1269,7 +1256,7 @@ async function runPanel(): Promise<void> {
             } else if (choice === 'reset') {
                 const ok = await confirm(
                     () => [...title('Personalizar › Restablecer'),
-                        ...para('Se restablecerán nombre, prefijo, moneda, estilo y formato del menú, banners, reacciones, reloj y logs.'),
+                        ...para('Se restablecerán nombre, prefijo, moneda, estilo y formato del menú, banners, reacciones y logs.'),
                         ...para('Los dueños y la sesión activa se conservan.', c.dim)],
                     '¿Restablecer los valores iniciales?'
                 );
