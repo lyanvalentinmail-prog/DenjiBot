@@ -101,7 +101,7 @@ export default {
     if (userList.length === 0) {
       return msg.reply(isViewMode ? 'ꕥ No hay usuarios con actividad registrada en este grupo.' : 'ꕥ No se encontraron usuarios inactivos.\n> ⴵ Tiempo limite: 30 dias');
     }
-    const botId = sock.user.id.split(':')[0] + '@s.whatsapp.net';
+    const botId = sock.user.id.split('@')[0].split(':')[0] + '@s.whatsapp.net';
     const currency = db.getSettings(botId)?.currency || '⛁';
     let report = '';
     if (isDeleteMode && !isViewMode) {

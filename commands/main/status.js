@@ -25,7 +25,7 @@ export default {
     const hostId = getDefaultHostId();
     const allChats = db.getChat();
     const registeredGroups = allChats?.length || 0;
-    const botId = sock.user.id.split(':')[0] + "@s.whatsapp.net" || false;
+    const botId = sock.user.id.split('@')[0].split(':')[0] + "@s.whatsapp.net" || false;
     const botSettings = db.getSettings(botId) || {};
     const botname = botSettings.botname || 'Bot';
     const allUsers = db.getUser();
@@ -36,7 +36,7 @@ export default {
 ◇ *Grupos registrados ›* ${registeredGroups.toLocaleString()}
 ◇ *Comandos ejecutados ›* ${toNum(totalCommands)}`;
     const sistema = os.type();
-    const cpu = os.cpus().length;
+    const cpu = os.cpus().length || (typeof os.availableParallelism === 'function' ? os.availableParallelism() : 1);
     const ramTotal = format(os.totalmem());
     const ramUsada = format(os.totalmem() - os.freemem());
     const arquitectura = os.arch();

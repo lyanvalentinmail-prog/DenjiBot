@@ -1,5 +1,5 @@
 import fs from 'node:fs';
-import { generateWAMessageFromContent, prepareWAMessageMedia } from '@whiskeysockets/baileys';
+import { generateWAMessageFromContent, prepareWAMessageMedia, jidNormalizedUser } from '@whiskeysockets/baileys';
 
 /**
  * Mensajes interactivos de WhatsApp (menú de lista).
@@ -28,8 +28,8 @@ export interface ListOptions {
     footer?: string;
     buttonText: string;
     sections: ListSection[];
-    /** Ruta local o URL de una imagen para la cabecera (opcional). */
-    image?: string;
+    /** Ruta local, URL o Buffer de una imagen para la cabecera (opcional). */
+    image?: string | Buffer;
 }
 
 async function buildHeader(sock: any, options: ListOptions): Promise<any> {
@@ -37,8 +37,11 @@ async function buildHeader(sock: any, options: ListOptions): Promise<any> {
     if (!options.image) return header;
 
     try {
-        const isUrl = /^https?:\/\//i.test(options.image);
-        const image = isUrl ? { url: options.image } : fs.readFileSync(options.image);
+        const image = Buffer.isBuffer(options.image)
+            ? options.image
+            : /^https?:\/\//i.test(options.image)
+              ? { url: options.image }
+              : fs.readFileSync(options.image);
         const media = await prepareWAMessageMedia({ image } as any, { upload: sock.waUploadToServer });
         if (media?.imageMessage) {
             header.hasMediaAttachment = true;
@@ -85,7 +88,7 @@ export async function sendList(sock: any, jid: string, options: ListOptions, quo
     const content = buildListContent(options, header);
 
     const message = generateWAMessageFromContent(jid, content, {
-        userJid: sock.user?.id,
+        userJid: sock.user?.id ? jidNormalizedUser(sock.user.id) : undefined,
         quoted
     } as any);
 

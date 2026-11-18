@@ -2,20 +2,19 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import crypto from 'node:crypto';
-import { spawn } from 'node:child_process';
 import axios from 'axios';
 import { fileTypeFromBuffer } from 'file-type';
 import {
     proto,
     delay,
+    S_WHATSAPP_NET,
     areJidsSameUser,
-    generateWAMessage,
-    generateWAMessageFromContent,
     downloadContentFromMessage,
     getContentType,
     getDevice,
     extractMessageContent,
-    jidDecode
+    jidDecode,
+    jidNormalizedUser
 } from '@whiskeysockets/baileys';
 import exif from './stickers.ts';
 import db from '#db';
@@ -25,7 +24,10 @@ import { sendStickerPack } from './packmessage.ts';
 const graphemeSegmenter = new Intl.Segmenter(undefined, { granularity: 'grapheme' });
 export const splitGraphemes = (input: string): string[] =>
     Array.from(graphemeSegmenter.segment(String(input || '')), s => s.segment);
-const { imageToWebp, videoToWebp, writeExifImg, writeExifVid } = exif;
+const { imageToWebp, videoToWebp, writeExifImg, writeExifVid, resizeToJpeg, runFfmpeg } = exif;
+
+export const DEFAULT_UA =
+    'Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Mobile Safari/537.36';
 
 export class BoundedMap<K = string, V = any> {
     #map = new Map<K, { v: V; ts: number }>();
@@ -70,8 +72,12 @@ export class BoundedMap<K = string, V = any> {
     }
 }
 
+// Caché separada: `rawGroupMetaCache` conserva los JID originales (@lid/@s.whatsapp.net)
+// que Baileys v7 necesita para cifrar mensajes en grupos LID; `groupMetaCache` guarda la
+// copia normalizada (@s.whatsapp.net) para plugins y permisos.
+const rawGroupMetaCache = new Map<string, { metadata: any; ts: number }>();
 const groupMetaCache = new Map<string, { metadata: any; ts: number }>();
-export const lidCache = new BoundedMap<string, string>(5000, 24 * 60 * 60_000);
+export const lidCache = new BoundedMap<string, string>(8000, 24 * 60 * 60_000);
 const META_TTL = 300_000;
 
 const gcMeta = setInterval(() => {
@@ -79,8 +85,22 @@ const gcMeta = setInterval(() => {
     for (const [key, val] of groupMetaCache) {
         if (now - val.ts > META_TTL) groupMetaCache.delete(key);
     }
+    for (const [key, val] of rawGroupMetaCache) {
+        if (now - val.ts > META_TTL) rawGroupMetaCache.delete(key);
+    }
 }, 10 * 60 * 1000);
 gcMeta.unref();
+
+export function getRawCachedMeta(groupJid: string): any {
+    const c = rawGroupMetaCache.get(groupJid);
+    if (!c || Date.now() - c.ts > META_TTL) return undefined;
+    return c.metadata;
+}
+
+export function setRawCachedMeta(groupJid: string, metadata: any): void {
+    if (!groupJid || !metadata) return;
+    rawGroupMetaCache.set(groupJid, { metadata, ts: Date.now() });
+}
 
 export function getCachedMeta(groupJid: string): any {
     const c = groupMetaCache.get(groupJid);
@@ -89,11 +109,13 @@ export function getCachedMeta(groupJid: string): any {
 }
 
 export function setCachedMeta(groupJid: string, metadata: any): void {
+    if (!groupJid || !metadata) return;
     groupMetaCache.set(groupJid, { metadata, ts: Date.now() });
 }
 
 export function deleteCachedMeta(groupJid: string): void {
     groupMetaCache.delete(groupJid);
+    rawGroupMetaCache.delete(groupJid);
 }
 
 export const decodeJid = (jid: any): string => {
@@ -109,22 +131,70 @@ export function normalizeJid(raw: any): string | null {
     if (!raw) return null;
     const s = typeof raw === 'number' ? String(raw) : String(raw).trim();
     if (!s) return null;
-    if (s.endsWith('@g.us') || s.endsWith('@newsletter') || s.endsWith('@lid')) return s;
+    if (s.endsWith('@g.us') || s.endsWith('@newsletter') || s.endsWith('@broadcast')) return s;
     if (/:\d+@/i.test(s)) {
         const decoded = jidDecode(s);
         if (decoded?.user && decoded?.server) return `${decoded.user}@${decoded.server}`;
     }
-    if (s.endsWith('@s.whatsapp.net')) return s;
+    if (s.endsWith('@lid') || s.endsWith('@s.whatsapp.net')) return s;
     const digits = s.replace(/\D/g, '');
     if (digits && digits.length >= 4 && digits.length <= 15) return `${digits}@s.whatsapp.net`;
     return s;
 }
 
+/** Normaliza el JID principal del bot sin duplicar `@s.whatsapp.net`. */
+export function normalizeBotJid(sockOrId: any): string {
+    const raw =
+        typeof sockOrId === 'string'
+            ? sockOrId
+            : sockOrId?.user?.id || sockOrId?.authState?.creds?.me?.id || '';
+    const num = String(raw || '').split('@')[0].split(':')[0].replace(/\D/g, '');
+    return num ? `${num}@s.whatsapp.net` : '';
+}
+
+/** Normaliza el LID del bot si está disponible en Baileys v7. */
+export function normalizeBotLid(sock: any): string {
+    const raw = sock?.user?.lid || sock?.authState?.creds?.me?.lid || '';
+    const num = String(raw || '').split('@')[0].split(':')[0].replace(/\D/g, '');
+    return num ? `${num}@lid` : '';
+}
+
+/** Registra un par LID <-> PN en la caché en memoria. */
+export function rememberLidMapping(lidRaw: any, pnRaw: any): void {
+    const lid = normalizeJid(lidRaw);
+    const pn = normalizeJid(pnRaw);
+    if (lid?.endsWith('@lid') && pn?.endsWith('@s.whatsapp.net')) {
+        lidCache.set(lid, pn);
+    }
+}
+
+/** Registra pares LID <-> PN desde las propiedades `*Alt` de Baileys v7. */
+export function rememberKeyAlts(key: any): void {
+    if (!key || typeof key !== 'object') return;
+    if (key.remoteJid && key.remoteJidAlt) {
+        if (String(key.remoteJid).endsWith('@lid')) rememberLidMapping(key.remoteJid, key.remoteJidAlt);
+        else if (String(key.remoteJidAlt).endsWith('@lid')) rememberLidMapping(key.remoteJidAlt, key.remoteJid);
+    }
+    if (key.participant && key.participantAlt) {
+        if (String(key.participant).endsWith('@lid')) rememberLidMapping(key.participant, key.participantAlt);
+        else if (String(key.participantAlt).endsWith('@lid')) rememberLidMapping(key.participantAlt, key.participant);
+    }
+}
+
 function lookupLidFromSession(lidNumber: string, sock?: any): string | null {
+    if (!lidNumber) return null;
+    const botLid = normalizeBotLid(sock);
+    const botJid = normalizeBotJid(sock);
+    if (botLid && botJid && botLid.split('@')[0] === lidNumber) {
+        return botJid;
+    }
     if (sock?.signalRepository?.lidMapping) {
         try {
             const cachedPn = sock.signalRepository.lidMapping.mappingCache?.get(`lid:${lidNumber}`);
-            if (cachedPn) return `${cachedPn}@s.whatsapp.net`;
+            if (cachedPn) {
+                const digits = String(cachedPn).split('@')[0].split(':')[0].replace(/\D/g, '');
+                if (digits) return `${digits}@s.whatsapp.net`;
+            }
         } catch {}
     }
     if (typeof sock?.findJidByLid === 'function') {
@@ -141,7 +211,8 @@ function lookupLidFromSession(lidNumber: string, sock?: any): string | null {
     try {
         if (fs.existsSync(mappingFile)) {
             const phoneStr = JSON.parse(fs.readFileSync(mappingFile, 'utf-8'));
-            if (phoneStr) return `${phoneStr}@s.whatsapp.net`;
+            const digits = String(phoneStr || '').split('@')[0].split(':')[0].replace(/\D/g, '');
+            if (digits) return `${digits}@s.whatsapp.net`;
         }
     } catch {}
     return null;
@@ -177,59 +248,97 @@ export function resolveParticipantJid(p: any, sock?: any): string | null {
             if (n && !n.endsWith('@lid')) return n;
         }
     }
-    const rawLid = p.lid || (p.id?.endsWith('@lid') ? p.id : null) || (p.jid?.endsWith('@lid') ? p.jid : null);
+    const rawLid =
+        normalizeJid(p.lid) ||
+        (String(p.id || '').endsWith('@lid') ? normalizeJid(p.id) : null) ||
+        (String(p.jid || '').endsWith('@lid') ? normalizeJid(p.jid) : null);
     if (rawLid) return resolveJidSync(rawLid, sock);
     return null;
 }
 
-function resolveParticipants(participants: any[], sock?: any): any[] {
-    if (!Array.isArray(participants)) return [];
-    return participants
-        .map(p => {
-            const realJid = resolveParticipantJid(p, sock);
-            if (!realJid) return p;
+export function normalizeGroupMetadata(rawMeta: any, sock?: any): any {
+    if (!rawMeta || !Array.isArray(rawMeta.participants)) return rawMeta;
+    const participants = rawMeta.participants
+        .map((p: any) => {
+            if (!p) return null;
+            const rawId = p.id;
+            const realJid = resolveParticipantJid(p, sock) || normalizeJid(p.id) || p.id;
             const originalLid =
-                p.lid || (p.id?.endsWith('@lid') ? p.id : undefined) || (p.jid?.endsWith('@lid') ? p.jid : undefined);
-            if (originalLid && !realJid.endsWith('@lid')) lidCache.set(originalLid, realJid);
+                normalizeJid(p.lid) ||
+                (String(p.id || '').endsWith('@lid') ? normalizeJid(p.id) : undefined) ||
+                (String(p.jid || '').endsWith('@lid') ? normalizeJid(p.jid) : undefined);
+            if (originalLid && realJid && !String(realJid).endsWith('@lid')) {
+                lidCache.set(originalLid, realJid);
+            }
             return {
                 ...p,
                 id: realJid,
+                rawId,
                 ...(originalLid ? { lid: originalLid } : {}),
                 ...(p.phoneNumber ? { phoneNumber: p.phoneNumber } : {})
             };
         })
-        .filter(p => p?.id);
+        .filter((p: any) => p?.id);
+    const ownerNorm = rawMeta.owner ? resolveJidSync(rawMeta.owner, sock) || rawMeta.owner : rawMeta.owner;
+    const ownerPn = rawMeta.ownerPn ? normalizeJid(rawMeta.ownerPn) : null;
+    if (rawMeta.owner && ownerPn) rememberLidMapping(rawMeta.owner, ownerPn);
+    return {
+        ...rawMeta,
+        owner: ownerPn || ownerNorm,
+        participants
+    };
 }
 
-async function resolveJidAsync(raw: any, sock: any, groupJid?: string | null): Promise<string> {
+export async function resolveJidAsync(raw: any, sock: any, groupJid?: string | null, altRaw?: any): Promise<string> {
+    if (altRaw) {
+        const altNorm = normalizeJid(altRaw);
+        const rawNorm = normalizeJid(raw);
+        if (rawNorm?.endsWith('@lid') && altNorm?.endsWith('@s.whatsapp.net')) {
+            lidCache.set(rawNorm, altNorm);
+            return altNorm;
+        }
+    }
     if (!raw) return '';
     const norm = normalizeJid(raw);
     if (!norm) return '';
     if (!norm.endsWith('@lid')) return norm;
+
     const sync = resolveJidSync(norm, sock);
     if (sync && !sync.endsWith('@lid')) return sync;
+
+    // Consultar LIDMappingStore nativo de Baileys v7 (asíncrono).
+    const lidStore = sock?.signalRepository?.lidMapping;
+    if (typeof lidStore?.getPNForLID === 'function') {
+        try {
+            const pn = await lidStore.getPNForLID(norm);
+            const pnNorm = normalizeJid(pn);
+            if (pnNorm && pnNorm.endsWith('@s.whatsapp.net')) {
+                lidCache.set(norm, pnNorm);
+                return pnNorm;
+            }
+        } catch {}
+    }
+
     if (!groupJid?.endsWith('@g.us')) return norm;
     const lidBase = norm.split('@')[0];
     let meta = getCachedMeta(groupJid);
-    if (!meta) {
+    if (!meta && typeof sock?.groupMetadata === 'function') {
         try {
             meta = await sock.groupMetadata(groupJid);
-            if (meta?.participants) setCachedMeta(groupJid, meta);
-            else meta = null;
         } catch {
             return norm;
         }
     }
     for (const p of meta?.participants ?? []) {
-        const pLidBase = p.lid?.split('@')[0];
-        const pIdBase = p.id && !p.id.endsWith('@lid') ? p.id.split('@')[0] : null;
-        if (pLidBase !== lidBase && pIdBase !== lidBase) continue;
+        const pLidBase = String(p.lid || '').split('@')[0].split(':')[0];
+        const pRawBase = String(p.rawId || '').split('@')[0].split(':')[0];
+        if (pLidBase !== lidBase && pRawBase !== lidBase) continue;
         const phone = p.phoneNumber
             ? normalizeJid(p.phoneNumber)
-            : p.id && !p.id.endsWith('@lid')
+            : p.id && !String(p.id).endsWith('@lid')
                 ? normalizeJid(p.id)
                 : null;
-        if (phone) {
+        if (phone && !phone.endsWith('@lid')) {
             lidCache.set(norm, phone);
             return phone;
         }
@@ -240,32 +349,201 @@ async function resolveJidAsync(raw: any, sock: any, groupJid?: string | null): P
 export function patchGroupMetadata(sock: any): void {
     if (!sock || sock.groupMetadataPatched || typeof sock.groupMetadata !== 'function') return;
     sock.groupMetadataPatched = true;
-    const orig = sock.groupMetadata.bind(sock);
+    const origMeta = sock.groupMetadata.bind(sock);
+    sock.rawGroupMetadata = origMeta;
+
     sock.groupMetadata = async (jid: string) => {
         try {
             const cached = getCachedMeta(jid);
             if (cached) return cached;
-            const meta = await orig(jid);
-            if (!meta?.participants) return meta;
-            meta.participants = resolveParticipants(meta.participants, sock);
-            setCachedMeta(jid, meta);
-            return meta;
+            const rawMeta = await origMeta(jid);
+            if (!rawMeta?.participants) return rawMeta;
+            // Guardar copia INTACTA para Baileys (relayMessage / sender-key LID)
+            // y devolver copia normalizada para comandos.
+            setRawCachedMeta(jid, rawMeta);
+            const normalized = normalizeGroupMetadata(rawMeta, sock);
+            setCachedMeta(jid, normalized);
+            return normalized;
         } catch {
             return null;
         }
     };
+
+    // En grupos LID de Baileys v7, `groupParticipantsUpdate` puede requerir el JID
+    // real del participante en el grupo (`rawId` / `@lid`) cuando se pasa un `@s.whatsapp.net`.
+    if (typeof sock.groupParticipantsUpdate === 'function' && !sock.groupParticipantsUpdatePatched) {
+        sock.groupParticipantsUpdatePatched = true;
+        const origUpdate = sock.groupParticipantsUpdate.bind(sock);
+        sock.groupParticipantsUpdate = async (jid: string, participants: string[], action: string) => {
+            const list = Array.isArray(participants) ? participants : [participants];
+            let mapped = list;
+            if (action !== 'add' && jid?.endsWith('@g.us')) {
+                const meta = getCachedMeta(jid) || (await sock.groupMetadata(jid).catch(() => null));
+                if (meta?.addressingMode === 'lid' && Array.isArray(meta.participants)) {
+                    mapped = list.map(target => {
+                        const targetNum = String(target || '').split('@')[0].split(':')[0];
+                        const found = meta.participants.find((p: any) => {
+                            const idNum = String(p.id || '').split('@')[0].split(':')[0];
+                            const pnNum = String(p.phoneNumber || '').split('@')[0].split(':')[0];
+                            const lidNum = String(p.lid || '').split('@')[0].split(':')[0];
+                            const rawNum = String(p.rawId || '').split('@')[0].split(':')[0];
+                            return targetNum && (targetNum === idNum || targetNum === pnNum || targetNum === lidNum || targetNum === rawNum);
+                        });
+                        return found?.rawId || found?.lid || target;
+                    });
+                }
+            }
+            try {
+                const res = await origUpdate(jid, mapped, action);
+                deleteCachedMeta(jid);
+                return res;
+            } catch (err) {
+                if (mapped.some((v, i) => v !== list[i])) {
+                    const res = await origUpdate(jid, list, action);
+                    deleteCachedMeta(jid);
+                    return res;
+                }
+                throw err;
+            }
+        };
+    }
 }
 
 export async function getBuffer(url: string, options: any = {}): Promise<Buffer> {
     const res = await axios({
         method: 'get',
         url,
-        headers: { DNT: 1, 'Upgrade-Insecure-Request': 1 },
+        headers: {
+            'User-Agent': DEFAULT_UA,
+            Accept: '*/*',
+            DNT: 1,
+            ...(options.headers || {})
+        },
         responseType: 'arraybuffer',
         timeout: 30_000,
+        maxRedirects: 5,
         ...options
     });
     return Buffer.from(res.data);
+}
+
+/** Sube un Buffer de imagen/video/audio a múltiples servicios con respaldo automático. */
+export async function uploadMedia(
+    buffer: Buffer,
+    preferredHost?: string
+): Promise<{ url: string; server: string }> {
+    const ft = (await fileTypeFromBuffer(buffer).catch(() => null)) || {
+        ext: 'bin',
+        mime: 'application/octet-stream'
+    };
+    const filename = `denji_${Date.now()}.${ft.ext}`;
+    const makeBlob = () => new Blob([new Uint8Array(buffer)], { type: ft.mime });
+
+    const providers: Record<string, () => Promise<string | null>> = {
+        catbox: async () => {
+            const form = new FormData();
+            form.append('reqtype', 'fileupload');
+            form.append('fileToUpload', makeBlob(), filename);
+            const res = await fetch('https://catbox.moe/user/api.php', {
+                method: 'POST',
+                headers: { 'User-Agent': DEFAULT_UA },
+                body: form,
+                signal: AbortSignal.timeout(25_000)
+            });
+            const txt = (await res.text()).trim();
+            return /^https?:\/\/files\.catbox\.moe\//i.test(txt) ? txt : null;
+        },
+        quax: async () => {
+            const form = new FormData();
+            form.append('files[]', makeBlob(), filename);
+            const res = await fetch('https://qu.ax/upload.php', {
+                method: 'POST',
+                headers: { 'User-Agent': DEFAULT_UA },
+                body: form,
+                signal: AbortSignal.timeout(25_000)
+            });
+            const json: any = await res.json();
+            const url = json?.files?.[0]?.url;
+            return typeof url === 'string' && url.startsWith('http') ? url : null;
+        },
+        uguu: async () => {
+            const form = new FormData();
+            form.append('files[]', makeBlob(), filename);
+            const res = await fetch('https://uguu.se/upload.php', {
+                method: 'POST',
+                headers: { 'User-Agent': DEFAULT_UA },
+                body: form,
+                signal: AbortSignal.timeout(25_000)
+            });
+            const json: any = await res.json();
+            const url = json?.files?.[0]?.url;
+            return typeof url === 'string' && url.startsWith('http') ? url.replace(/\\\//g, '/') : null;
+        },
+        tmpfiles: async () => {
+            const form = new FormData();
+            form.append('file', makeBlob(), filename);
+            const res = await fetch('https://tmpfiles.org/api/v1/upload', {
+                method: 'POST',
+                headers: { 'User-Agent': DEFAULT_UA },
+                body: form,
+                signal: AbortSignal.timeout(25_000)
+            });
+            const json: any = await res.json();
+            const rawUrl: string | undefined = json?.data?.url;
+            if (!rawUrl || !rawUrl.startsWith('http')) return null;
+            return rawUrl.replace('://tmpfiles.org/', '://tmpfiles.org/dl/');
+        },
+        pixeldrain: async () => {
+            const res = await fetch(`https://pixeldrain.com/api/file/${encodeURIComponent(filename)}`, {
+                method: 'PUT',
+                headers: { 'User-Agent': DEFAULT_UA, 'Content-Type': ft.mime },
+                body: new Uint8Array(buffer),
+                signal: AbortSignal.timeout(25_000)
+            });
+            const json: any = await res.json();
+            return json?.id ? `https://pixeldrain.com/api/file/${json.id}` : null;
+        }
+    };
+
+    const labels: Record<string, string> = {
+        catbox: 'Catbox',
+        quax: 'Qu.ax',
+        uguu: 'Uguu',
+        tmpfiles: 'TmpFiles',
+        pixeldrain: 'Pixeldrain'
+    };
+
+    const key = String(preferredHost || '').toLowerCase().replace(/[^a-z]/g, '');
+    if (key && providers[key]) {
+        const url = await providers[key]().catch(() => null);
+        if (url) return { url, server: labels[key] || key };
+    }
+
+    for (const name of ['catbox', 'quax', 'uguu', 'tmpfiles', 'pixeldrain']) {
+        if (name === key) continue;
+        try {
+            const url = await providers[name]();
+            if (url) return { url, server: labels[name] || name };
+        } catch {}
+    }
+    throw new Error('No se pudo subir el archivo a ningún servidor temporal.');
+}
+
+async function resolveInputBuffer(input: any): Promise<Buffer> {
+    if (Buffer.isBuffer(input)) return input;
+    if (input instanceof Uint8Array) return Buffer.from(input);
+    if (typeof input === 'string') {
+        if (/^data:.*?\/.*?;base64,/i.test(input)) {
+            return Buffer.from(input.split(',')[1], 'base64');
+        }
+        if (/^https?:\/\//i.test(input)) return getBuffer(input);
+        if (fs.existsSync(input)) return fs.readFileSync(input);
+    }
+    if (input && typeof input === 'object' && typeof input.url === 'string') {
+        if (/^https?:\/\//i.test(input.url)) return getBuffer(input.url);
+        if (fs.existsSync(input.url)) return fs.readFileSync(input.url);
+    }
+    throw new Error('Imagen inválida.');
 }
 
 // Respuesta de un menú interactivo (nativeFlow): extrae el comando seleccionado.
@@ -282,18 +560,22 @@ function extractNativeFlowId(msgContent: any): string {
     }
 }
 
-function unwrapContent(message: any): any {
+export function unwrapContent(message: any): any {
     if (!message || typeof message !== 'object') return message;
     let raw = message;
-    if (raw.ephemeralMessage?.message) raw = raw.ephemeralMessage.message;
-    if (raw.viewOnceMessage?.message) raw = raw.viewOnceMessage.message;
-    if (raw.viewOnceMessageV2?.message) raw = raw.viewOnceMessageV2.message;
-    if (raw.viewOnceMessageV2Extension?.message) raw = raw.viewOnceMessageV2Extension.message;
-    if (raw.documentWithCaptionMessage?.message) raw = raw.documentWithCaptionMessage.message;
-    if (raw.editedMessage?.message?.protocolMessage?.editedMessage) {
-        raw = raw.editedMessage.message.protocolMessage.editedMessage;
-    } else if (raw.editedMessage?.message) {
-        raw = raw.editedMessage.message;
+    for (let i = 0; i < 6; i++) {
+        if (raw?.ephemeralMessage?.message) { raw = raw.ephemeralMessage.message; continue; }
+        if (raw?.viewOnceMessage?.message) { raw = raw.viewOnceMessage.message; continue; }
+        if (raw?.viewOnceMessageV2?.message) { raw = raw.viewOnceMessageV2.message; continue; }
+        if (raw?.viewOnceMessageV2Extension?.message) { raw = raw.viewOnceMessageV2Extension.message; continue; }
+        if (raw?.documentWithCaptionMessage?.message) { raw = raw.documentWithCaptionMessage.message; continue; }
+        if (raw?.editedMessage?.message?.protocolMessage?.editedMessage) {
+            raw = raw.editedMessage.message.protocolMessage.editedMessage;
+            continue;
+        }
+        if (raw?.editedMessage?.message) { raw = raw.editedMessage.message; continue; }
+        if (raw?.protocolMessage?.editedMessage) { raw = raw.protocolMessage.editedMessage; continue; }
+        break;
     }
     return raw;
 }
@@ -304,17 +586,11 @@ async function renderThumb(webpBuf: Buffer, size: number, format: 'png' | 'jpg')
     const outFile = path.join(os.tmpdir(), `denji-pk-out-${tag}.${format}`);
     await fs.promises.writeFile(inFile, webpBuf);
     try {
-        await new Promise<void>((resolve, reject) => {
-            const vf =
-                format === 'png'
-                    ? `scale=${size}:${size}:force_original_aspect_ratio=decrease,pad=${size}:${size}:(ow-iw)/2:(oh-ih)/2:color=0x00000000`
-                    : `scale=${size}:${size}:force_original_aspect_ratio=decrease,pad=${size}:${size}:(ow-iw)/2:(oh-ih)/2:color=white`;
-            const proc = spawn('ffmpeg', ['-y', '-i', inFile, '-frames:v', '1', '-vf', vf, outFile], {
-                stdio: ['ignore', 'ignore', 'pipe']
-            });
-            proc.on('error', reject);
-            proc.on('close', code => (code === 0 ? resolve() : reject(new Error(`ffmpeg exit ${code}`))));
-        });
+        const vf =
+            format === 'png'
+                ? `scale=${size}:${size}:force_original_aspect_ratio=decrease,format=rgba,pad=${size}:${size}:(ow-iw)/2:(oh-ih)/2:color=#00000000`
+                : `scale=${size}:${size}:force_original_aspect_ratio=decrease,pad=${size}:${size}:(ow-iw)/2:(oh-ih)/2:color=white`;
+        await runFfmpeg(['-y', '-i', inFile, '-frames:v', '1', '-vf', vf, outFile]);
         return await fs.promises.readFile(outFile);
     } finally {
         await fs.promises.unlink(inFile).catch(() => {});
@@ -375,22 +651,60 @@ export async function sendNativeStickerPack(
     );
 }
 
-function attachSockHelpers(sock: any): void {
+export function attachSockHelpers(sock: any): void {
     if (!sock) return;
 
     if (!sock.decodeJid) {
         sock.decodeJid = decodeJid;
     }
 
+    if (!sock.getBotJid) {
+        sock.getBotJid = () => normalizeBotJid(sock);
+    }
+
     patchGroupMetadata(sock);
+
+    // Reemplaza `updateProfilePicture` de Baileys (que requiere `jimp` o `sharp`)
+    // con redimensionado vía `ffmpeg`, compatible con Termux sin dependencias extra.
+    if (typeof sock.query === 'function' && !sock.profilePicPatched) {
+        sock.profilePicPatched = true;
+        sock.updateProfilePicture = async (jid: string, content: any, opts?: { full?: boolean; width?: number }) => {
+            if (!jid) throw new Error('JID inválido para foto de perfil.');
+            const rawBuf = await resolveInputBuffer(content);
+            const size = opts?.width || 720;
+            const img = await resizeToJpeg(rawBuf, size, !opts?.full);
+            const meJid = normalizeBotJid(sock);
+            const normTarget = jid.endsWith('@g.us') || jid.endsWith('@newsletter') ? jid : jidNormalizedUser(jid);
+            const targetJid = meJid && normTarget === meJid ? undefined : normTarget;
+            await sock.query({
+                tag: 'iq',
+                attrs: {
+                    to: S_WHATSAPP_NET,
+                    type: 'set',
+                    xmlns: 'w:profile:picture',
+                    ...(targetJid ? { target: targetJid } : {})
+                },
+                content: [
+                    {
+                        tag: 'picture',
+                        attrs: { type: 'image' },
+                        content: img
+                    }
+                ]
+            });
+        };
+    }
 
     if (!sock.downloadMediaMessage) {
         sock.downloadMediaMessage = async (message: any): Promise<Buffer> => {
             const m = message?.msg || message;
-            const mime = m?.mimetype || '';
-            const messageType = String(message?.type || mime.split('/')[0] || '')
-                .replace(/Message/gi, '')
+            const mime = m?.mimetype || message?.mimetype || message?.mime || '';
+            let messageType = String(message?.type || message?.mtype || mime.split('/')[0] || '')
+                .replace(/Message$/i, '')
                 .toLowerCase();
+            if (messageType === 'ptv') messageType = 'video';
+            if (mime === 'image/webp' && !messageType) messageType = 'sticker';
+            if (!messageType) messageType = 'document';
             const stream = await downloadContentFromMessage(m, messageType as any);
             const chunks: Buffer[] = [];
             for await (const chunk of stream) chunks.push(chunk as Buffer);
@@ -405,52 +719,40 @@ function attachSockHelpers(sock: any): void {
 
     if (!sock.sendImageAsSticker) {
         sock.sendImageAsSticker = async (jid: string, p: any, quoted?: any, options: any = {}) => {
-            const buff = Buffer.isBuffer(p)
-                ? p
-                : /^data:.*?\/.*?;base64,/i.test(p)
-                    ? Buffer.from(String(p).split(',')[1], 'base64')
-                    : /^https?:\/\//.test(p)
-                        ? await getBuffer(p)
-                        : fs.existsSync(p)
-                            ? fs.readFileSync(p)
-                            : Buffer.alloc(0);
-            if (options?.packname || options?.author) {
-                const filePath = await writeExifImg(buff, options);
+            const buff = await resolveInputBuffer(p);
+            const { packname, author, categories, ...sendOpts } = options || {};
+            if (packname || author) {
+                const filePath = await writeExifImg(buff, { packname, author, categories });
                 try {
-                    await sock.sendMessage(jid, { sticker: { url: filePath }, ...options }, { quoted });
-                    return filePath;
+                    const stickerBuf = fs.readFileSync(filePath);
+                    await sock.sendMessage(jid, { sticker: stickerBuf, ...sendOpts }, { quoted });
+                    return stickerBuf;
                 } finally {
                     if (fs.existsSync(filePath)) try { fs.unlinkSync(filePath); } catch {}
                 }
             }
             const webpBuf = await imageToWebp(buff);
-            await sock.sendMessage(jid, { sticker: webpBuf, ...options }, { quoted });
+            await sock.sendMessage(jid, { sticker: webpBuf, ...sendOpts }, { quoted });
             return webpBuf;
         };
     }
 
     if (!sock.sendVideoAsSticker) {
         sock.sendVideoAsSticker = async (jid: string, p: any, quoted?: any, options: any = {}) => {
-            const buff = Buffer.isBuffer(p)
-                ? p
-                : /^data:.*?\/.*?;base64,/i.test(p)
-                    ? Buffer.from(String(p).split(',')[1], 'base64')
-                    : /^https?:\/\//.test(p)
-                        ? await getBuffer(p)
-                        : fs.existsSync(p)
-                            ? fs.readFileSync(p)
-                            : Buffer.alloc(0);
-            if (options?.packname || options?.author) {
-                const filePath = await writeExifVid(buff, options);
+            const buff = await resolveInputBuffer(p);
+            const { packname, author, categories, ...sendOpts } = options || {};
+            if (packname || author) {
+                const filePath = await writeExifVid(buff, { packname, author, categories });
                 try {
-                    await sock.sendMessage(jid, { sticker: { url: filePath }, ...options }, { quoted });
-                    return filePath;
+                    const stickerBuf = fs.readFileSync(filePath);
+                    await sock.sendMessage(jid, { sticker: stickerBuf, ...sendOpts }, { quoted });
+                    return stickerBuf;
                 } finally {
                     if (fs.existsSync(filePath)) try { fs.unlinkSync(filePath); } catch {}
                 }
             }
             const webpBuf = await videoToWebp(buff);
-            await sock.sendMessage(jid, { sticker: webpBuf, ...options }, { quoted });
+            await sock.sendMessage(jid, { sticker: webpBuf, ...sendOpts }, { quoted });
             return webpBuf;
         };
     }
@@ -465,16 +767,11 @@ function attachSockHelpers(sock: any): void {
             ptt = false,
             options: any = {}
         ) => {
-            let buffer: Buffer;
-            if (Buffer.isBuffer(p)) buffer = p;
-            else if (/^https?:\/\//.test(p)) buffer = await getBuffer(p);
-            else if (fs.existsSync(p)) buffer = fs.readFileSync(p);
-            else throw new Error('Ruta o buffer inválido');
-
+            const buffer = await resolveInputBuffer(p);
             const type = (await fileTypeFromBuffer(buffer)) ?? { mime: 'application/octet-stream', ext: 'bin' };
             const mimetype = options.mimetype ?? type.mime;
             let mtype = 'document';
-            if (/webp/i.test(type.mime)) mtype = 'sticker';
+            if (/webp/i.test(type.mime) && !options.asImage) mtype = 'sticker';
             else if (/image/i.test(type.mime)) mtype = 'image';
             else if (/video/i.test(type.mime)) mtype = 'video';
             else if (/audio/i.test(type.mime)) mtype = 'audio';
@@ -488,53 +785,50 @@ function attachSockHelpers(sock: any): void {
     if (!sock.sendAlbumMessage) {
         sock.sendAlbumMessage = async (jid: string, medias: any[], options: any = {}) => {
             if (typeof jid !== 'string') throw new TypeError(`jid must be string, received: ${jid}`);
-            if (!Array.isArray(medias) || medias.length < 2) throw new RangeError('Minimum 2 media required');
-            const delayMs = !isNaN(options.delay) ? Number(options.delay) : 500;
+            if (!Array.isArray(medias) || medias.length === 0) {
+                throw new Error('No se encontraron elementos multimedia para enviar.');
+            }
             const quoted = options.quoted;
+            // Si solo hay 1 elemento, enviarlo directamente en vez de fallar.
+            if (medias.length === 1) {
+                const { type, data, caption } = medias[0];
+                return sock.sendMessage(
+                    jid,
+                    { [type || 'image']: data, ...(caption ? { caption } : {}) },
+                    { quoted }
+                );
+            }
+            const delayMs = !isNaN(options.delay) ? Number(options.delay) : 500;
             try {
-                const album = generateWAMessageFromContent(
+                // Formato nativo de álbum de Baileys v7 (album + albumParentKey + messageSecret).
+                const opener = await sock.sendMessage(
                     jid,
                     {
-                        messageContextInfo: {},
-                        albumMessage: {
-                            expectedImageCount: medias.filter(m => m.type === 'image').length,
-                            expectedVideoCount: medias.filter(m => m.type === 'video').length,
-                            ...(quoted?.key
-                                ? {
-                                      contextInfo: {
-                                          remoteJid: quoted.key.remoteJid,
-                                          fromMe: quoted.key.fromMe,
-                                          stanzaId: quoted.key.id,
-                                          participant: quoted.key.participant || quoted.key.remoteJid,
-                                          quotedMessage: quoted.message
-                                      }
-                                  }
-                                : {})
+                        album: {
+                            expectedImageCount: medias.filter(m => (m.type || 'image') === 'image').length,
+                            expectedVideoCount: medias.filter(m => m.type === 'video').length
                         }
-                    } as any,
-                    { userJid: sock.user?.id } as any
+                    },
+                    { quoted }
                 );
-                await sock.relayMessage(album.key.remoteJid!, album.message!, { messageId: album.key.id! });
+                if (!opener?.key) throw new Error('No se pudo crear el mensaje de álbum');
                 for (const { type, data, caption } of medias) {
-                    const mediaMsg = await generateWAMessage(
-                        album.key.remoteJid!,
-                        { [type]: data, ...(caption ? { caption } : {}) } as any,
-                        { userJid: sock.user?.id || jid, upload: sock.waUploadToServer }
-                    );
-                    if (mediaMsg.message) {
-                        mediaMsg.message.messageContextInfo = {
-                            messageAssociation: { associationType: 1, parentMessageKey: album.key }
-                        } as any;
-                        await sock.relayMessage(mediaMsg.key.remoteJid!, mediaMsg.message, { messageId: mediaMsg.key.id! });
-                    }
+                    await sock.sendMessage(jid, {
+                        [type || 'image']: data,
+                        ...(caption ? { caption } : {}),
+                        albumParentKey: opener.key
+                    });
                     await delay(delayMs);
                 }
-                return album;
+                return opener;
             } catch {
-                // Respaldo: enviar las primeras imágenes individualmente si falla el álbum.
                 let last: any = null;
                 for (const { type, data, caption } of medias.slice(0, 5)) {
-                    last = await sock.sendMessage(jid, { [type]: data, ...(caption ? { caption } : {}) }, { quoted });
+                    last = await sock.sendMessage(
+                        jid,
+                        { [type || 'image']: data, ...(caption ? { caption } : {}) },
+                        { quoted }
+                    );
                     await delay(delayMs);
                 }
                 return last;
@@ -543,162 +837,29 @@ function attachSockHelpers(sock: any): void {
     }
 
     if (!sock.sendCodeMessage) {
-        sock.sendCodeMessage = async (jid: string, filename: string, code: any, quoted?: any, tableData?: any) => {
-            const KEYWORDS = new Set([
-                'break', 'case', 'catch', 'class', 'const', 'continue', 'debugger', 'default', 'delete',
-                'do', 'else', 'export', 'extends', 'false', 'finally', 'for', 'function', 'if', 'import',
-                'in', 'instanceof', 'let', 'new', 'null', 'return', 'super', 'switch', 'this', 'throw',
-                'true', 'try', 'typeof', 'var', 'void', 'while', 'with', 'yield', 'async', 'await', 'static'
-            ]);
-            const METHOD_NAMES = new Set([
-                'log', 'parse', 'stringify', 'from', 'toString', 'readFileSync', 'existsSync', 'statSync',
-                'resolve', 'join', 'randomUUID', 'randomBytes', 'startsWith', 'replace', 'trim', 'isFile',
-                'relayMessage', 'sendMessage'
-            ]);
-            function tokenize(src: string) {
-                const tokens: { content: string; type: string }[] = [];
-                let i = 0;
-                const push = (content: string, type = 'DEFAULT') => {
-                    if (content) tokens.push({ content, type });
-                };
-                while (i < src.length) {
-                    const ch = src[i];
-                    const rest = src.slice(i);
-                    if (rest.startsWith('//')) {
-                        let j = i + 2;
-                        while (j < src.length && src[j] !== '\n') j++;
-                        push(src.slice(i, j), 'DEFAULT');
-                        i = j;
-                        continue;
+        // WhatsApp descarta silenciosamente `botForwardedMessage` (@bot) en cuentas normales;
+        // enviar como bloque de código formateado garantiza entrega en grupos y chats privados.
+        sock.sendCodeMessage = async (jid: string, title: string, code: any, quoted?: any, tableData?: any) => {
+            const parts: string[] = [];
+            if (title && String(title).trim()) parts.push(String(title).trim());
+            if (tableData?.headers?.length && Array.isArray(tableData.rows)) {
+                if (tableData.title) parts.push(`*${tableData.title}*`);
+                for (const row of tableData.rows) {
+                    if (Array.isArray(row) && row.length >= 2) {
+                        parts.push(`> *${row[0]}:* ${row.slice(1).join(' · ')}`);
                     }
-                    if (rest.startsWith('/*')) {
-                        let j = i + 2;
-                        while (j < src.length - 1 && !(src[j] === '*' && src[j + 1] === '/')) j++;
-                        j = Math.min(j + 2, src.length);
-                        push(src.slice(i, j), 'DEFAULT');
-                        i = j;
-                        continue;
-                    }
-                    if (ch === "'" || ch === '"' || ch === '`') {
-                        const quote = ch;
-                        let j = i + 1;
-                        let escaped = false;
-                        while (j < src.length) {
-                            const c = src[j];
-                            if (escaped) escaped = false;
-                            else if (c === '\\') escaped = true;
-                            else if (c === quote) { j++; break; }
-                            j++;
-                        }
-                        push(src.slice(i, j), 'STR');
-                        i = j;
-                        continue;
-                    }
-                    if (/[0-9]/.test(ch)) {
-                        let j = i + 1;
-                        while (j < src.length && /[0-9._]/.test(src[j])) j++;
-                        push(src.slice(i, j), 'NUMBER');
-                        i = j;
-                        continue;
-                    }
-                    if (/[A-Za-z_$]/.test(ch)) {
-                        let j = i + 1;
-                        while (j < src.length && /[A-Za-z0-9_$]/.test(src[j])) j++;
-                        const word = src.slice(i, j);
-                        const next = src[j] || '';
-                        const prev = src[i - 1] || '';
-                        if (KEYWORDS.has(word)) push(word, 'KEYWORD');
-                        else if ((METHOD_NAMES.has(word) || next === '(') && prev === '.') push(word, 'METHOD');
-                        else if (METHOD_NAMES.has(word) && next === '(') push(word, 'METHOD');
-                        else push(word, 'DEFAULT');
-                        i = j;
-                        continue;
-                    }
-                    push(ch, 'DEFAULT');
-                    i++;
                 }
-                const merged: { content: string; type: string }[] = [];
-                for (const token of tokens) {
-                    const last = merged[merged.length - 1];
-                    if (last?.type === 'DEFAULT' && token.type === 'DEFAULT') last.content += token.content;
-                    else merged.push({ ...token });
-                }
-                return merged;
             }
-            try {
-                const codeBlocks = Array.isArray(code) ? code : tokenize(String(code));
-                const sections: any[] = [];
-                const submessages: any[] = [];
-                sections.push({
-                    view_model: {
-                        primitive: { text: filename, __typename: 'GenAIMarkdownTextUXPrimitive' },
-                        __typename: 'GenAISingleLayoutViewModel'
-                    }
-                });
-                if (tableData) {
-                    const tableRows = [
-                        { items: tableData.headers, isHeading: true },
-                        ...tableData.rows.map((r: any[]) => ({ items: r.map(String) }))
-                    ];
-                    submessages.push({ messageType: 4, tableMetadata: { title: tableData.title, rows: tableRows } });
-                    sections.push({
-                        view_model: {
-                            primitive: {
-                                title: tableData.title,
-                                rows: tableRows.map((row: any) => ({
-                                    is_header: row.isHeading ?? false,
-                                    cells: row.items,
-                                    markdown_cells: []
-                                })),
-                                __typename: 'GenATableUXPrimitive'
-                            },
-                            __typename: 'GenAISingleLayoutViewModel'
-                        }
-                    });
-                }
-                sections.push({
-                    view_model: {
-                        primitive: { language: 'javascript', code_blocks: codeBlocks, __typename: 'GenAICodeUXPrimitive' },
-                        __typename: 'GenAISingleLayoutViewModel'
-                    }
-                });
-                const payload = { response_id: crypto.randomUUID(), sections };
-                const content = {
-                    messageContextInfo: {
-                        threadId: [],
-                        deviceListMetadata: {
-                            senderKeyIndexes: [],
-                            recipientKeyIndexes: [],
-                            recipientKeyHash: '',
-                            recipientTimestamp: Math.floor(Date.now() / 1000)
-                        },
-                        deviceListMetadataVersion: 2,
-                        messageSecret: crypto.randomBytes(32).toString('base64')
-                    },
-                    botForwardedMessage: {
-                        message: {
-                            richResponseMessage: {
-                                submessages,
-                                messageType: 1,
-                                unifiedResponse: { data: Buffer.from(JSON.stringify(payload), 'utf8').toString('base64') },
-                                contextInfo: {
-                                    mentionedJid: [],
-                                    groupMentions: [],
-                                    statusAttributions: [],
-                                    forwardingScore: 2,
-                                    isForwarded: true,
-                                    forwardedAiBotMessageInfo: { botJid: '259786046210223@bot' },
-                                    forwardOrigin: 4,
-                                    botMessageSharingInfo: { botEntryPointOrigin: 1, forwardScore: 2 }
-                                }
-                            }
-                        }
-                    }
-                };
-                return await sock.relayMessage(jid, content, {});
-            } catch {
-                return sock.sendMessage(jid, { text: `\`\`\`\n${String(code)}\n\`\`\`` }, { quoted });
+            const codeText = String(code ?? '').trim();
+            if (codeText) {
+                const maxLen = 60_000;
+                const clipped =
+                    codeText.length > maxLen
+                        ? `${codeText.slice(0, maxLen)}\n... [truncado]`
+                        : codeText;
+                parts.push(`\`\`\`\n${clipped}\n\`\`\``);
             }
+            return sock.sendMessage(jid, { text: parts.join('\n\n') }, { quoted });
         };
     }
 
@@ -711,7 +872,7 @@ function attachSockHelpers(sock: any): void {
         sock.reply = async (jid: string, text: any = '', quoted?: any, options: any = {}) =>
             Buffer.isBuffer(text)
                 ? sock.sendFile(jid, text, 'file', '', quoted, false, options)
-                : sock.sendMessage(jid, { ...options, text: String(text) }, { quoted, ...options });
+                : sock.sendMessage(jid, { ...options, text: String(text ?? '') }, { quoted, ...options });
     }
 
     if (!sock.sendText) {
@@ -720,15 +881,28 @@ function attachSockHelpers(sock: any): void {
     }
 }
 
+function toMediaCategory(type: string, mime: string): string {
+    const t = String(type || '').replace(/Message$/i, '').toLowerCase();
+    if (['image', 'video', 'sticker', 'audio', 'document'].includes(t)) return t;
+    if (t === 'ptv') return 'video';
+    if (/webp/i.test(mime)) return 'sticker';
+    if (/^image\//i.test(mime)) return 'image';
+    if (/^video\//i.test(mime)) return 'video';
+    if (/^audio\//i.test(mime)) return 'audio';
+    return '';
+}
+
 export async function smsg(sock: any, msg: any): Promise<any> {
     if (!msg) return msg;
     attachSockHelpers(sock);
 
-    const botRaw = sock?.user?.id || '';
-    const botId = botRaw ? `${botRaw.split('@')[0].split(':')[0]}@s.whatsapp.net` : '';
+    const botId = normalizeBotJid(sock);
+    const botLid = normalizeBotLid(sock);
+    if (botLid && botId) rememberLidMapping(botLid, botId);
     const botSetting = botId ? db.getSettings(botId) : { prefix: ['.'] };
 
     if (msg.key) {
+        rememberKeyAlts(msg.key);
         msg.id = msg.key.id || '';
         msg.chat = msg.key.remoteJid || '';
         msg.fromMe = Boolean(msg.key.fromMe);
@@ -737,18 +911,35 @@ export async function smsg(sock: any, msg: any): Promise<any> {
                 a => msg.id.startsWith(a) && [12, 16, 20, 22, 40].includes(msg.id.length)
             ) || false;
         msg.isGroup = msg.chat.endsWith('@g.us');
+
         if (!msg.isGroup && msg.chat.endsWith('@lid')) {
-            const resolved = await resolveJidAsync(msg.chat, sock, null);
-            if (resolved && !resolved.endsWith('@lid')) msg.chat = resolved;
+            const resolvedChat = await resolveJidAsync(msg.chat, sock, null, msg.key.remoteJidAlt);
+            if (resolvedChat && !resolvedChat.endsWith('@lid')) msg.chat = resolvedChat;
         }
         msg.from = msg.chat;
-        const rawSender = (msg.fromMe && sock?.user?.id) || msg.key.participant || msg.key.remoteJid || '';
-        msg.sender = await resolveJidAsync(decodeJid(rawSender), sock, msg.key.remoteJid);
+
+        if (msg.fromMe && botId) {
+            msg.sender = botId;
+        } else {
+            const rawSender = msg.key.participant || msg.key.remoteJid || '';
+            const altSender = msg.isGroup ? msg.key.participantAlt : msg.key.remoteJidAlt;
+            const decoded = decodeJid(rawSender);
+            if (
+                (botId && decoded && areJidsSameUser(decoded, botId)) ||
+                (botLid && decoded && areJidsSameUser(decoded, botLid))
+            ) {
+                msg.sender = botId || decoded;
+                msg.fromMe = true;
+            } else {
+                msg.sender = await resolveJidAsync(decoded, sock, msg.key.remoteJid, altSender);
+            }
+        }
     }
 
     if (msg.message) {
         const unwrapped = unwrapContent(msg.message);
-        msg.type = getContentType(unwrapped) || Object.keys(unwrapped)[0] || '';
+        msg.type = getContentType(unwrapped) || Object.keys(unwrapped || {})[0] || '';
+        msg.mtype = msg.type;
         msg.msg = (extractMessageContent(unwrapped?.[msg.type]) as any) || unwrapped?.[msg.type] || {};
 
         const flowId = extractNativeFlowId(msg.msg) || extractNativeFlowId(unwrapped?.interactiveResponseMessage);
@@ -782,30 +973,14 @@ export async function smsg(sock: any, msg: any): Promise<any> {
             '';
 
         const rawMentioned: string[] = msg.msg?.contextInfo?.mentionedJid ?? [];
-        let metaParticipants: any[] | null = null;
-        if (msg.isGroup && rawMentioned.some(j => j?.endsWith('@lid'))) {
-            try {
-                const meta = getCachedMeta(msg.chat) ?? (await sock.groupMetadata(msg.chat).catch(() => null));
-                if (meta) setCachedMeta(msg.chat, meta);
-                metaParticipants = meta?.participants ?? null;
-            } catch {}
-        }
-        const resolveMentionJid = (raw: string): string | null => {
+        const resolveMentionOne = async (raw: string): Promise<string | null> => {
             if (!raw) return null;
-            const norm = normalizeJid(raw);
-            if (!norm) return null;
-            if (!norm.endsWith('@lid')) return norm;
-            const sync = resolveJidSync(norm, sock);
-            if (sync && !sync.endsWith('@lid')) return sync;
-            if (metaParticipants) {
-                const lidBase = norm.split('@')[0];
-                for (const p of metaParticipants) {
-                    if (p.lid?.split('@')[0] === lidBase || p.id?.split('@')[0] === lidBase) return p.id;
-                }
-            }
-            return norm;
+            const resolved = await resolveJidAsync(raw, sock, msg.isGroup ? msg.chat : null);
+            return resolved || null;
         };
-        msg.mentionedJid = rawMentioned.map(resolveMentionJid).filter(Boolean);
+        msg.mentionedJid = rawMentioned.length
+            ? (await Promise.all(rawMentioned.map(resolveMentionOne))).filter(Boolean)
+            : [];
 
         let activePrefixes: string[] = [];
         if (botSetting.prefix === 1) activePrefixes = [];
@@ -835,21 +1010,34 @@ export async function smsg(sock: any, msg: any): Promise<any> {
             typeof msg.messageTimestamp === 'number'
                 ? msg.messageTimestamp
                 : msg.messageTimestamp?.low || msg.messageTimestamp?.high || Math.floor(Date.now() / 1000);
-        msg.isMedia = Boolean(msg.msg?.mimetype || msg.msg?.thumbnailDirectPath);
+
+        const directMime =
+            msg.msg?.mimetype ||
+            (msg.type === 'stickerMessage' ? 'image/webp' : '') ||
+            (msg.type === 'imageMessage' ? 'image/jpeg' : '') ||
+            (msg.type === 'videoMessage' || msg.type === 'ptvMessage' ? 'video/mp4' : '') ||
+            (msg.type === 'audioMessage' ? 'audio/ogg; codecs=opus' : '');
+        msg.mimetype = directMime;
+        msg.mime = directMime;
+        msg.mediaType = toMediaCategory(msg.type, directMime);
+        msg.isMedia = Boolean(directMime || msg.msg?.thumbnailDirectPath);
         if (msg.isMedia) {
-            msg.mime = msg.msg?.mimetype || '';
             msg.size = msg.msg?.fileLength;
             msg.height = msg.msg?.height || '';
             msg.width = msg.msg?.width || '';
-            if (/webp/i.test(msg.mime)) msg.isAnimated = Boolean(msg.msg?.isAnimated);
+            msg.seconds = msg.msg?.seconds || 0;
+            if (/webp/i.test(directMime)) msg.isAnimated = Boolean(msg.msg?.isAnimated);
         }
 
         const ctxInfo = msg.msg?.contextInfo;
         msg.quoted = ctxInfo?.quotedMessage ? {} : null;
         if (msg.quoted) {
+            // Preservar `rawMessage` sin desenvolver para `.read` (ver única vez)
+            msg.quoted.rawMessage = ctxInfo.quotedMessage;
             const rawQuoted = unwrapContent(ctxInfo.quotedMessage);
-            msg.quoted.message = extractMessageContent(ctxInfo.quotedMessage) || rawQuoted;
+            msg.quoted.message = rawQuoted || extractMessageContent(ctxInfo.quotedMessage) || ctxInfo.quotedMessage;
             msg.quoted.type = getContentType(msg.quoted.message) || Object.keys(msg.quoted.message || {})[0] || '';
+            msg.quoted.mtype = msg.quoted.type;
             msg.quoted.msg =
                 (extractMessageContent(msg.quoted.message?.[msg.quoted.type]) as any) ||
                 msg.quoted.message?.[msg.quoted.type] ||
@@ -862,11 +1050,14 @@ export async function smsg(sock: any, msg: any): Promise<any> {
                       a => msg.quoted.id.startsWith(a) && [12, 16, 20, 22, 40].includes(msg.quoted.id.length)
                   )
                 : false;
-            const rawQP = ctxInfo.participant ?? '';
-            msg.quoted.sender = await resolveJidAsync(decodeJid(rawQP), sock, msg.chat);
-            msg.quoted.fromMe = sock?.user?.id
-                ? areJidsSameUser(msg.quoted.sender, decodeJid(sock.user.id))
-                : false;
+            const rawQP = decodeJid(ctxInfo.participant ?? '');
+            msg.quoted.rawParticipant = ctxInfo.participant || '';
+            msg.quoted.sender = await resolveJidAsync(rawQP, sock, msg.chat);
+            msg.quoted.fromMe = Boolean(
+                (botId && (areJidsSameUser(msg.quoted.sender, botId) || (rawQP && areJidsSameUser(rawQP, botId)))) ||
+                    (botLid && (areJidsSameUser(msg.quoted.sender, botLid) || (rawQP && areJidsSameUser(rawQP, botLid))))
+            );
+            if (msg.quoted.fromMe && botId) msg.quoted.sender = botId;
             msg.quoted.text =
                 msg.quoted.msg?.text ||
                 msg.quoted.msg?.caption ||
@@ -876,6 +1067,7 @@ export async function smsg(sock: any, msg: any): Promise<any> {
                 msg.quoted.msg?.selectedDisplayText ||
                 msg.quoted.msg?.title ||
                 '';
+            msg.quoted.caption = msg.quoted.msg?.caption || '';
             msg.quoted.body =
                 msg.quoted.text ||
                 msg.quoted.msg?.selectedButtonId ||
@@ -883,9 +1075,10 @@ export async function smsg(sock: any, msg: any): Promise<any> {
                 msg.quoted.msg?.selectedId ||
                 msg.quoted.msg?.name ||
                 '';
-            msg.quoted.mentionedJid = (msg.quoted.msg?.contextInfo?.mentionedJid ?? [])
-                .map(resolveMentionJid)
-                .filter(Boolean);
+            const rawQMentioned: string[] = msg.quoted.msg?.contextInfo?.mentionedJid ?? [];
+            msg.quoted.mentionedJid = rawQMentioned.length
+                ? (await Promise.all(rawQMentioned.map(resolveMentionOne))).filter(Boolean)
+                : [];
             msg.quoted.mentions = msg.quoted.mentionedJid;
             msg.quoted.isGroup = Boolean(msg.quoted.chat?.endsWith('@g.us'));
             let quotedPrefix = '';
@@ -899,25 +1092,35 @@ export async function smsg(sock: any, msg: any): Promise<any> {
             msg.quoted.command = msg.quoted.body
                 ? msg.quoted.body.slice(quotedPrefix.length).trim().split(/ +/).shift() || ''
                 : '';
-            msg.quoted.isMedia = Boolean(msg.quoted.msg?.mimetype || msg.quoted.msg?.thumbnailDirectPath);
+
+            const qMime =
+                msg.quoted.msg?.mimetype ||
+                (msg.quoted.type === 'stickerMessage' ? 'image/webp' : '') ||
+                (msg.quoted.type === 'imageMessage' ? 'image/jpeg' : '') ||
+                (msg.quoted.type === 'videoMessage' || msg.quoted.type === 'ptvMessage' ? 'video/mp4' : '') ||
+                (msg.quoted.type === 'audioMessage' ? 'audio/ogg; codecs=opus' : '');
+            msg.quoted.mimetype = qMime;
+            msg.quoted.mime = qMime;
+            msg.quoted.mediaType = toMediaCategory(msg.quoted.type, qMime);
+            msg.quoted.isMedia = Boolean(qMime || msg.quoted.msg?.thumbnailDirectPath);
             if (msg.quoted.isMedia) {
-                msg.quoted.mimetype = msg.quoted.msg?.mimetype || '';
-                msg.quoted.mime = msg.quoted.mimetype;
                 msg.quoted.size = msg.quoted.msg?.fileLength;
                 msg.quoted.height = msg.quoted.msg?.height || '';
                 msg.quoted.width = msg.quoted.msg?.width || '';
-                if (/webp/i.test(msg.quoted.mime)) msg.quoted.isAnimated = Boolean(msg.quoted.msg?.isAnimated);
+                msg.quoted.seconds = msg.quoted.msg?.seconds || 0;
+                if (/webp/i.test(qMime)) msg.quoted.isAnimated = Boolean(msg.quoted.msg?.isAnimated);
             }
+            const delParticipant = ctxInfo.participant || msg.quoted.sender;
             msg.quoted.key = {
                 remoteJid: ctxInfo.remoteJid || msg.chat,
-                participant: msg.quoted.sender,
+                participant: delParticipant,
                 fromMe: msg.quoted.fromMe,
                 id: ctxInfo.stanzaId
             };
             msg.quoted.fakeObj = proto.WebMessageInfo.fromObject({
                 key: { remoteJid: msg.quoted.chat, fromMe: msg.quoted.fromMe, id: msg.quoted.id },
                 message: msg.quoted.message,
-                ...(msg.isGroup ? { participant: msg.quoted.sender } : {})
+                ...(msg.isGroup ? { participant: delParticipant } : {})
             });
             msg.quoted.download = () => sock.downloadMediaMessage(msg.quoted);
             msg.quoted.delete = () =>
@@ -926,7 +1129,7 @@ export async function smsg(sock: any, msg: any): Promise<any> {
                         remoteJid: msg.quoted.chat,
                         fromMe: msg.quoted.fromMe,
                         id: msg.quoted.id,
-                        participant: msg.quoted.sender
+                        participant: delParticipant
                     }
                 });
         }
@@ -938,8 +1141,11 @@ export async function smsg(sock: any, msg: any): Promise<any> {
         const quoted = msg;
         const chat = msg.chat;
         const ephemeralExpiration = msg.expiration;
-        if (content && typeof content === 'object') {
+        if (content && typeof content === 'object' && !Buffer.isBuffer(content)) {
             return sock.sendMessage(chat, content, { ...options, quoted, ephemeralExpiration });
+        }
+        if (Buffer.isBuffer(content)) {
+            return sock.sendFile(chat, content, 'file', '', quoted, false, options);
         }
         return sock.sendMessage(chat, { text: String(content ?? ''), ...options }, { quoted, ephemeralExpiration });
     };
@@ -949,6 +1155,8 @@ export async function smsg(sock: any, msg: any): Promise<any> {
 
 export function serialize(sock: any, m: proto.IWebMessageInfo): any {
     if (!m || typeof m !== 'object' || !m.message) return null;
+    const key: any = m.key || {};
+    rememberKeyAlts(key);
     const unwrapped = unwrapContent(m.message);
     const msgType = getContentType(unwrapped) || '';
     if (!msgType) return null;
@@ -959,12 +1167,20 @@ export function serialize(sock: any, m: proto.IWebMessageInfo): any {
         content?.text ||
         content?.caption ||
         '';
-    const key = m.key || {};
-    const chat = UserJid(sock, decodeJid(key.remoteJid || ''));
-    const sender = UserJid(sock, chat, decodeJid(key.participant || key.remoteJid || ''));
+    const rawChat = decodeJid(key.remoteJid || '');
+    const chat =
+        rawChat.endsWith('@lid') && key.remoteJidAlt
+            ? decodeJid(key.remoteJidAlt)
+            : UserJid(sock, rawChat);
+    const rawSender = decodeJid(key.participant || key.participantAlt || key.remoteJid || '');
+    const sender =
+        rawSender.endsWith('@lid') && key.participantAlt
+            ? decodeJid(key.participantAlt)
+            : UserJid(sock, chat, rawSender);
     return {
         ...m,
         type: msgType,
+        mtype: msgType,
         msg: content,
         body,
         text: body,
@@ -975,3 +1191,5 @@ export function serialize(sock: any, m: proto.IWebMessageInfo): any {
         isBot: Boolean(key.fromMe)
     };
 }
+
+(globalThis as any).normalizeBotJid = normalizeBotJid;

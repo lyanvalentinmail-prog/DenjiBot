@@ -1,36 +1,20 @@
-import { promises as fsp } from 'node:fs';
-import { tmpdir } from 'node:os';
-import crypto from 'node:crypto';
-import path from 'node:path';
-import { spawn } from 'node:child_process';
 import * as cheerio from 'cheerio';
+import exif from '#core/exif';
+import { DEFAULT_UA } from '#simple';
 
-async function webpToPngLocal(buffer) {
-  const tag = crypto.randomBytes(6).toString('hex');
-  const inFile = path.join(tmpdir(), `toimg-${tag}.webp`);
-  const outFile = path.join(tmpdir(), `toimg-${tag}.png`);
-  await fsp.writeFile(inFile, buffer);
-  try {
-    await new Promise((resolve, reject) => {
-      const p = spawn('ffmpeg', ['-y', '-i', inFile, '-frames:v', '1', outFile], {
-        stdio: ['ignore', 'ignore', 'pipe']
-      });
-      p.on('error', reject);
-      p.on('close', code => (code === 0 ? resolve() : reject(new Error(`ffmpeg exit ${code}`))));
-    });
-    return await fsp.readFile(outFile);
-  } finally {
-    await fsp.unlink(inFile).catch(() => {});
-    await fsp.unlink(outFile).catch(() => {});
-  }
-}
+const { webpToPng, gifToMp4 } = exif;
 
 async function ezgifConvert(buffer, mode) {
   const endpoint = mode === 'mp4' ? 'webp-to-mp4' : 'webp-to-png';
   const form = new FormData();
   form.append('new-image-url', '');
-  form.append('new-image', new Blob([buffer], { type: 'image/webp' }), 'image.webp');
-  const res = await fetch(`https://ezgif.com/${endpoint}`, { method: 'POST', body: form });
+  form.append('new-image', new Blob([new Uint8Array(buffer)], { type: 'image/webp' }), 'image.webp');
+  const res = await fetch(`https://ezgif.com/${endpoint}`, {
+    method: 'POST',
+    headers: { 'User-Agent': DEFAULT_UA },
+    body: form,
+    signal: AbortSignal.timeout(25_000)
+  });
   const html = await res.text();
   const $ = cheerio.load(html);
   const form2 = new FormData();
@@ -43,46 +27,65 @@ async function ezgifConvert(buffer, mode) {
       form2.append(name, value);
     }
   });
-  if (!file) throw new Error('No se pudo subir el sticker para convertirlo.');
-  const res2 = await fetch(`https://ezgif.com/${endpoint}/${file}`, { method: 'POST', body: form2 });
+  if (!file) throw new Error('No se pudo procesar el sticker.');
+  const res2 = await fetch(`https://ezgif.com/${endpoint}/${file}`, {
+    method: 'POST',
+    headers: { 'User-Agent': DEFAULT_UA },
+    body: form2,
+    signal: AbortSignal.timeout(30_000)
+  });
   const html2 = await res2.text();
   const $2 = cheerio.load(html2);
-  const selector = mode === 'mp4' ? 'div#output > p.outfile > video > source' : 'div#output > p.outfile > img';
+  const selector =
+    mode === 'mp4' ? 'div#output > p.outfile > video > source' : 'div#output > p.outfile > img';
   const src = $2(selector).attr('src');
   if (!src) throw new Error('No se pudo obtener el archivo convertido.');
   const outUrl = new URL(src, res2.url).toString();
-  const mediaRes = await fetch(outUrl);
+  const mediaRes = await fetch(outUrl, {
+    headers: { 'User-Agent': DEFAULT_UA },
+    signal: AbortSignal.timeout(25_000)
+  });
   return Buffer.from(await mediaRes.arrayBuffer());
 }
 
+const hasAnimChunk = buf =>
+  Buffer.isBuffer(buf) &&
+  buf.length > 32 &&
+  (buf.indexOf(Buffer.from('ANIM')) !== -1 || buf.indexOf(Buffer.from('ANMF')) !== -1);
+
 export default {
-  command: ['toimg', 'toimage'],
+  command: ['toimg', 'toimage', 'togif', 'tovideo'],
   category: 'utils',
   description: 'Convertir un sticker a imagen o GIF.',
-  run: async ({ msg, sock }) => {
-    if (!msg.quoted) {
-      return sock.reply(msg.chat, '《✧》 Debes citar un sticker para convertir.', msg);
+  run: async ({ msg, sock, command }) => {
+    if (!msg.quoted || !/webp/i.test(msg.quoted.mimetype || msg.quoted.mime || '')) {
+      return sock.reply(msg.chat, '《✧》 Debes responder a un *sticker* para convertirlo.', msg);
     }
-    await msg.react('🕒');
     try {
-      const quoted = msg.quoted;
-      const buffer = await quoted.download();
-      if (!buffer) {
-        await msg.react('✖️');
+      const buffer = await msg.quoted.download();
+      if (!buffer?.length) {
         return sock.reply(msg.chat, '《✧》 No se pudo descargar el sticker.', msg);
       }
-      const isAnimated = Boolean(quoted.msg?.isAnimated);
-      if (isAnimated) {
-        const mp4Buffer = await ezgifConvert(buffer, 'mp4');
-        await sock.sendMessage(msg.chat, { video: mp4Buffer, caption: 'ꕥ *Aquí tienes ฅ^•ﻌ•^ฅ*', gifPlayback: true }, { quoted: msg });
+      const isAnimated = Boolean(msg.quoted.isAnimated || msg.quoted.msg?.isAnimated || hasAnimChunk(buffer));
+      const wantVideo = isAnimated || /gif|video/i.test(command);
+
+      if (wantVideo && isAnimated) {
+        const mp4Buffer = await ezgifConvert(buffer, 'mp4').catch(() => gifToMp4(buffer));
+        await sock.sendMessage(
+          msg.chat,
+          { video: mp4Buffer, mimetype: 'video/mp4', caption: 'ꕥ *Aquí tienes ฅ^•ﻌ•^ฅ*', gifPlayback: command !== 'tovideo' },
+          { quoted: msg }
+        );
       } else {
-        const pngBuffer = await webpToPngLocal(buffer).catch(() => ezgifConvert(buffer, 'png'));
-        await sock.sendMessage(msg.chat, { image: pngBuffer, caption: 'ꕥ *Aquí tienes ฅ^•ﻌ•^ฅ*' }, { quoted: msg });
+        const pngBuffer = await webpToPng(buffer).catch(() => ezgifConvert(buffer, 'png'));
+        await sock.sendMessage(
+          msg.chat,
+          { image: pngBuffer, caption: 'ꕥ *Aquí tienes ฅ^•ﻌ•^ฅ*' },
+          { quoted: msg }
+        );
       }
-      await msg.react('✔️');
     } catch (error) {
-      await msg.react('✖️');
-      sock.reply(msg.chat, `《✧》 Error al convertir el sticker.\n${error.message}`, msg);
+      await sock.reply(msg.chat, `《✧》 Error al convertir el sticker.\n> ${error.message}`, msg);
     }
   }
 };

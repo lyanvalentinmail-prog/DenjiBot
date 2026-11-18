@@ -1,112 +1,52 @@
-import axios from 'axios';
 import db from '#db';
+import { uploadMedia } from '#simple';
 
-const generateUniqueFilename = (mime) => {
-  const ext = (mime || 'image/jpeg').split('/')[1]?.split(';')[0] || 'jpg';
-  return `${Date.now()}_${Math.random().toString(36).slice(2)}.${ext}`;
-};
-
-const uploadAdoFiles = async (buffer, mime) => {
-  const filename = generateUniqueFilename(mime);
-  const res = await axios.post(
-    'https://cdn.adoolab.xyz/api/upload',
-    {
-      filename,
-      data: buffer.toString('base64'),
-      expiration: 'never'
-    },
-    {
-      headers: { 'Content-Type': 'application/json' },
-      maxContentLength: Infinity,
-      maxBodyLength: Infinity
-    }
-  );
-  const url = res.data?.url;
-  if (!url || typeof url !== 'string' || !url.startsWith('https://')) {
-    throw new Error('Respuesta inválida de AdoFiles: ' + JSON.stringify(res.data));
-  }
-  return url;
-};
-
-const uploadFare = async (buffer, mime) => {
-  const type = mime || 'application/octet-stream';
-  const form = new FormData();
-  form.append('file', new Blob([buffer], { type }), generateUniqueFilename(type));
-  const res = await fetch('https://u.fare.ink/api/upload', { method: 'POST', body: form });
-  const data = await res.json();
-  const url = data?.file?.publicUrl;
-  if (!url || typeof url !== 'string' || !url.startsWith('https://')) {
-    throw new Error('Respuesta inválida de Fare: ' + JSON.stringify(data));
-  }
-  return url;
-};
-
-const uploadUguu = async (buffer, mime) => {
-  const type = mime || 'application/octet-stream';
-  const form = new FormData();
-  form.append('files[]', new Blob([buffer], { type }), generateUniqueFilename(type));
-  const res = await fetch('https://uguu.se/upload.php', { method: 'POST', body: form });
-  const data = await res.json();
-  const url = data?.files?.[0]?.url;
-  if (!url) throw new Error('Respuesta inválida de Uguu: ' + JSON.stringify(data));
-  return url;
-};
-
-const uploadAuto = async (buffer, mime) => {
-  for (const [fn, name] of [
-    [() => uploadAdoFiles(buffer, mime), 'adofiles'],
-    [() => uploadFare(buffer, mime), 'fare'],
-    [() => uploadUguu(buffer, mime), 'uguu']
-  ]) {
-    try { return { link: await fn(), server: name }; } catch {}
-  }
-  throw new Error('Todos los servidores fallaron');
-};
-
-const formatBytes = (bytes) => {
-  if (bytes === 0) return '0 Bytes';
+function formatBytes(bytes) {
+  if (!bytes) return '0 B';
   const k = 1024;
-  const sizes = ['Bytes', 'KB', 'MB', 'GB'];
+  const sizes = ['B', 'KB', 'MB', 'GB'];
   const i = Math.floor(Math.log(bytes) / Math.log(k));
-  return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
-};
+  return `${parseFloat((bytes / Math.pow(k, i)).toFixed(2))} ${sizes[i]}`;
+}
 
 export default {
-  command: ['tourl'],
+  command: ['tourl', 'upload'],
   category: 'utils',
-  description: 'Convertir una imagen en un enlace.',
+  description: 'Convertir una imagen, video o audio en un enlace.',
   run: async ({ msg, sock, args, usedPrefix, command }) => {
     const q = msg.quoted || msg;
-    const mime = (q.msg || q).mimetype || '';
+    const mime = (q.msg || q).mimetype || q.mime || '';
     if (!mime) {
       return sock.reply(
         msg.chat,
-        `《✧》 Por favor, responde a una imagen o video con *${usedPrefix + command} [servidor]* para convertirlo en URL.\n\n✿ Servidores disponibles:\n> › adofiles (permanente)\n> › fare\n> › uguu (temporal, 3h)\n> › auto (selecciona automáticamente)`,
+        `《✧》 Envía o responde a una imagen, video o audio con *${usedPrefix + command}* para convertirlo en enlace.\n\n` +
+          `✿ Servidores disponibles:\n` +
+          `> › catbox (permanente)\n` +
+          `> › quax\n` +
+          `> › uguu (temporal)\n` +
+          `> › tmpfiles\n` +
+          `> › auto (por defecto, con respaldo automático)`,
         msg
       );
     }
     try {
       const media = await q.download();
-      if (!media) return sock.reply(msg.chat, 'ꕥ No se pudo descargar el archivo.', msg);
-      const serverArg = args[0]?.toLowerCase() || 'adofiles';
-      const servers = {
-        adofiles: () => uploadAdoFiles(media, mime).then(link => ({ link, server: 'adofiles' })),
-        fare: () => uploadFare(media, mime).then(link => ({ link, server: 'fare' })),
-        uguu: () => uploadUguu(media, mime).then(link => ({ link, server: 'uguu' })),
-        auto: () => uploadAuto(media, mime)
-      };
-      if (!servers[serverArg]) {
-        return sock.reply(msg.chat, 'ꕥ Servidor no válido. Disponibles: adofiles, fare, uguu o auto', msg);
-      }
-      const { link, server } = await servers[serverArg]();
+      if (!media?.length) return sock.reply(msg.chat, 'ꕥ No se pudo descargar el archivo.', msg);
+      const preferred = args[0]?.toLowerCase() || '';
+      const { url, server } = await uploadMedia(media, preferred === 'auto' ? '' : preferred);
       const user = db.getUser(msg.sender);
+      const ext = mime.split('/')[1]?.split(';')[0]?.toUpperCase() || 'ARCHIVO';
       await sock.reply(
         msg.chat,
-        `𖹭 ❀ *Upload To ${server.toUpperCase()}*\n\nׅ  ׄ  ✿   ׅ り *Link ›* ${link}\nׅ  ׄ  ✿   ׅ り *Peso ›* ${formatBytes(media.length)}\nׅ  ׄ  ✿   ׅ り *Tipo ›* ${mime.split('/')[1]?.toUpperCase() || 'UNKNOWN'}\nׅ  ׄ  ✿   ׅ り *Solicitado por ›* ${user?.name || msg.pushName || 'Usuario'}`,
+        `𖹭 ❀ *Subido a ${server}*\n\n` +
+          `ׅ  ׄ  ✿   ׅ り *Link ›* ${url}\n` +
+          `ׅ  ׄ  ✿   ׅ り *Peso ›* ${formatBytes(media.length)}\n` +
+          `ׅ  ׄ  ✿   ׅ り *Tipo ›* ${ext}\n` +
+          `ׅ  ׄ  ✿   ׅ り *Solicitado por ›* ${user?.name || msg.pushName || 'Usuario'}`,
         msg
       );
     } catch (e) {
-      await sock.reply(msg.chat, `> Ocurrió un error al ejecutar *${usedPrefix + command}*.\n> [Error: *${e.message}*]`, msg);
+      await sock.reply(msg.chat, `> Error al ejecutar *${usedPrefix + command}*.\n> [Error: *${e.message}*]`, msg);
     }
   }
 };

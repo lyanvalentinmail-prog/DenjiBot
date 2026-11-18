@@ -80,7 +80,12 @@ function attach(stream: NodeJS.ReadableStream | null): void {
     });
 }
 
-function onMessage(message: BridgeMessage): void {
+function onMessage(message: BridgeMessage | string): void {
+    if (message === 'restart' || (message && typeof message === 'object' && (message as any).type === 'restart')) {
+        panelLog('Reinicio solicitado por comando…');
+        void stopBot().then(() => startBot(lastOptions));
+        return;
+    }
     if (!message || typeof message !== 'object') return;
 
     if (message.type === 'runtime') {

@@ -18,7 +18,7 @@ export default {
   description: 'Ver el top de personajes favoritos.',
   run: async ({ msg, sock, args, usedPrefix, command }) => {
     const chat = db.getChat(msg.chat);
-    if (chat.adminonly || !chat.gacha) {
+    if (!chat.gacha) {
       return msg.reply(`ꕥ Los comandos de *Gacha* están desactivados en este grupo.\n\nUn *administrador* puede activarlos con el comando:\n» *${usedPrefix}gacha on*`);
     }    
     try {
@@ -36,7 +36,10 @@ export default {
         const name = character?.name || c.name;
         enriched.push({ name, favorites: counts[c.id] || 0 });
       }      
-      const filtered = enriched.filter(e => e.favorites > 0);     
+      const filtered = enriched.filter(e => e.favorites > 0);
+      if (!filtered.length) {
+        return msg.reply('ꕥ Aún no hay personajes favoritos registrados.');
+      }
       const page = parseInt(args[0]) || 1;
       const perPage = 10;
       const totalPages = Math.max(1, Math.ceil(filtered.length / perPage));
@@ -51,7 +54,7 @@ export default {
         replyText += `   ♡ ${char.favorites} favorito${char.favorites !== 1 ? 's' : ''}.\n`;
       });      
       replyText += `\n> Página ${page} de ${totalPages}`;
-      await sock.reply(msg.chat, msg.trim(), msg);
+      await sock.reply(msg.chat, replyText.trim(), msg);
     } catch (e) {
       await msg.reply(`> An unexpected error occurred while executing command *${usedPrefix + command}*. Please try again or contact support if the issue persists.\n> [Error: *${e.message}*]`);
     }

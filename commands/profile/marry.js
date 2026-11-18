@@ -8,7 +8,7 @@ export default {
   description: 'Casarte con alguien.',
   run: async ({ msg, sock, usedPrefix, command, text }) => {
     const chatId = msg.chat;
-    const idBot = sock.user.id.split(':')[0] + '@s.whatsapp.net';
+    const idBot = sock.user.id.split('@')[0].split(':')[0] + '@s.whatsapp.net';
     const proposer = msg.sender;
     const proposee = msg.mentionedJid?.[0] || msg.quoted?.sender || null;
     const proposerUser = db.getUser(proposer);

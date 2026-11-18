@@ -8,10 +8,10 @@ export default {
   description: 'Apostar coins en el casino.',
   run: async ({ msg, sock, args, usedPrefix, command, text }) => {
     const chatData = db.getChat(msg.chat)
-    if (chatData.adminonly || !chatData.economy) {
+    if (!chatData.economy) {
       return msg.reply(`ꕥ Los comandos de *Economía* están desactivados en este grupo.\n\nUn *administrador* puede activarlos con el comando:\n» *${usedPrefix}economy on*`);
     }        
-    const botId = sock.user.id.split(':')[0] + '@s.whatsapp.net';
+    const botId = sock.user.id.split('@')[0].split(':')[0] + '@s.whatsapp.net';
     const bot = db.getSettings(botId);
     const currency = bot.currency;
     const botname = bot.botname;    

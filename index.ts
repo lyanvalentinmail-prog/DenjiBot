@@ -17,7 +17,7 @@ import { EventEmitter } from 'node:events';
 import Agent from 'node:https';
 import config from '#config';
 import db from '#db';
-import { smsg, getCachedMeta, deleteCachedMeta, patchGroupMetadata } from '#simple';
+import { smsg, getRawCachedMeta, deleteCachedMeta, patchGroupMetadata, rememberLidMapping } from '#simple';
 import { MemoryCache, createSignalCache } from '#core/signal-cache';
 import { beginMessage, instrumentSocket } from '#core/latency';
 import cmdsLoader from '#loader';
@@ -261,7 +261,7 @@ export async function startBot(): Promise<void> {
         defaultQueryTimeoutMs: undefined,
         retryRequestDelayMs: 250,
         msgRetryCounterCache: msgRetryCounterCache as any,
-        cachedGroupMetadata: async (jid: string) => getCachedMeta(jid),
+        cachedGroupMetadata: async (jid: string) => getRawCachedMeta(jid),
         getMessage: async (key: any) => msgStore.get(`${key.remoteJid}:${key.id}`),
         fetchAgent: httpAgent as any
     });
@@ -418,6 +418,15 @@ export async function startBot(): Promise<void> {
         }
     });
 
+    sock.ev.on('lid-mapping.update', (updates: any) => {
+        try {
+            const list = Array.isArray(updates) ? updates : updates ? [updates] : [];
+            for (const entry of list) {
+                if (entry?.lid && entry?.pn) rememberLidMapping(entry.lid, entry.pn);
+            }
+        } catch {}
+    });
+
     sock.ev.on('messages.upsert', ({ messages, type }: any) => {
         if (type !== 'notify') return;
 
@@ -431,7 +440,7 @@ export async function startBot(): Promise<void> {
             const ts = typeof rawMsg.messageTimestamp === 'number'
                 ? rawMsg.messageTimestamp
                 : rawMsg.messageTimestamp?.low || 0;
-            if (ts && ts * 1000 < bootTime - 15_000) continue;
+            if (ts && ts * 1000 < bootTime - 60_000) continue;
 
             beginMessage(rawMsg);
             const sid = `${jid}:${mId}`;
@@ -455,42 +464,53 @@ export async function startBot(): Promise<void> {
                             body: String(m.body || '').slice(0, 100)
                         });
                     });
-                } catch {}
+                } catch (err: any) {
+                    console.error(chalk.red('[ UPSERT ERROR ]:'), err?.message || err);
+                }
             })();
         }
     });
 }
 
-startBot().catch(() => {});
+startBot().catch((err: any) => {
+    console.error(chalk.red('[ BOOT ERROR ]:'), err?.message || err);
+});
 
 const originalStdoutWrite = process.stdout.write.bind(process.stdout);
+const originalStderrWrite = process.stderr.write.bind(process.stderr);
 
-const filterNoise = (chunk: any, encoding?: any, callback?: any) => {
+const isSignalNoise = (str: string): boolean =>
+    str.includes('Closing open session') ||
+    str.includes('Closing session') ||
+    str.includes('SessionEntry') ||
+    str.includes('ephemeralKeyPair') ||
+    str.includes('currentRatchet') ||
+    str.includes('prekey bundle') ||
+    str.includes('chainKey') ||
+    str.includes('registrationId') ||
+    str.includes('bad-mac') ||
+    str.includes('Bad MAC') ||
+    str.includes('Failed to decrypt') ||
+    str.includes('Session error') ||
+    str.includes('Error: bad-mac');
+
+const wrapFilter = (orig: typeof process.stdout.write) => (chunk: any, encoding?: any, callback?: any) => {
     const str = typeof chunk === 'string' ? chunk : chunk.toString('utf8');
-    if (
-        str.includes('Closing open session') ||
-        str.includes('Closing session') ||
-        str.includes('SessionEntry') ||
-        str.includes('ephemeralKeyPair') ||
-        str.includes('currentRatchet') ||
-        str.includes('prekey bundle') ||
-        str.includes('chainKey') ||
-        str.includes('registrationId') ||
-        str.includes('bad-mac') ||
-        str.includes('Bad MAC') ||
-        str.includes('Failed to decrypt') ||
-        str.includes('Session error') ||
-        str.includes('Error: bad-mac')
-    ) {
+    if (isSignalNoise(str)) {
         if (typeof callback === 'function') callback();
         return true;
     }
-    return originalStdoutWrite(chunk, encoding, callback);
+    return orig(chunk, encoding, callback);
 };
 
-process.stdout.write = filterNoise as any;
-process.stderr.write = filterNoise as any;
+process.stdout.write = wrapFilter(originalStdoutWrite) as any;
+process.stderr.write = wrapFilter(originalStderrWrite) as any;
 
-process.on('uncaughtException', () => {});
-process.on('unhandledRejection', () => {});
-process.on('uncaughtExceptionMonitor', () => {});
+const logRuntimeError = (tag: string, err: any) => {
+    const text = String(err?.stack || err?.message || err || '');
+    if (!text || isSignalNoise(text)) return;
+    console.error(chalk.red(`[ ${tag} ]:`), err?.message || err);
+};
+
+process.on('uncaughtException', err => logRuntimeError('UNCAUGHT', err));
+process.on('unhandledRejection', err => logRuntimeError('REJECTION', err));

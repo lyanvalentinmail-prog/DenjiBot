@@ -7,7 +7,8 @@ import pino from 'pino';
 import fs from 'fs';
 import path from 'path';
 import chalk from 'chalk';
-import { smsg, patchGroupMetadata, getCachedMeta, deleteCachedMeta } from '#serialize';
+import { smsg, patchGroupMetadata, getRawCachedMeta, deleteCachedMeta, rememberLidMapping } from '#serialize';
+import { SUBS_DIR } from '#settings';
 import db from '#db';
 import { MemoryCache, createSignalCache } from '#core/signal-cache';
 import { beginMessage, instrumentSocket } from '#core/latency';
@@ -16,17 +17,16 @@ if (!global.conns) global.conns = [];
 let reintentos = {};
 let commandFlags = {};
 const cleanJid = (jid = '') => jid.replace(/:\d+/, '').split('@')[0];
-const sessionsPath = path.resolve(process.cwd(), 'Sessions');
-const subsPath = path.join(sessionsPath, 'Subs');
+const subsPath = SUBS_DIR;
 
 function ensureDir(dir) {
   if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
 }
 
 function getClient(client) {
-  const userId = client?.user?.id?.split(':')[0];
+  const userId = client?.user?.id?.split('@')[0]?.split(':')[0];
   if (!userId) return client;
-  return global.conns?.find((c) => c?.user?.id?.split(':')[0] === userId) || client;
+  return global.conns?.find((c) => c?.user?.id?.split('@')[0]?.split(':')[0] === userId) || client;
 }
 
 export function remove(sock) {
@@ -74,7 +74,6 @@ export async function startSubBot(msg, client, caption = '', isCode = false, pho
   const msgRetryCounterCache = new MemoryCache({ stdTTL: 3600, checkperiod: 600, useClones: false });
   const msgStore = new Map();
   const msgLimit = 500;
-  console.info = () => {};
   const socks = makeWASocket({
     version,
     logger,
@@ -92,10 +91,18 @@ export async function startSubBot(msg, client, caption = '', isCode = false, pho
     transactionOpts: { maxCommitRetries: 10, delayBetweenTriesMs: 3000 },
     emitOwnEvents: false,
     msgRetryCounterCache,
-    cachedGroupMetadata: async (jid) => getCachedMeta(jid) ?? await socks.getCachedGroupMetadata?.(jid),
+    cachedGroupMetadata: async (jid) => getRawCachedMeta(jid),
     getMessage: async (key) => msgStore.get(key.remoteJid + ':' + key.id),
   });
   patchGroupMetadata(socks);
+  socks.ev.on('lid-mapping.update', (updates) => {
+    try {
+      const list = Array.isArray(updates) ? updates : updates ? [updates] : [];
+      for (const entry of list) {
+        if (entry?.lid && entry?.pn) rememberLidMapping(entry.lid, entry.pn);
+      }
+    } catch {}
+  });
   instrumentSocket(socks);
   socks.msgRetryCounterCache = msgRetryCounterCache;
   socks.isCommand = isCommand;
@@ -128,7 +135,8 @@ export async function startSubBot(msg, client, caption = '', isCode = false, pho
       void (async () => {
         try {
           if (!raw?.message || raw.key?.remoteJid === 'status@broadcast') return;
-          if ((raw.messageTimestamp * 1000) < bootTime - 15_000) return;
+          const ts = typeof raw.messageTimestamp === 'number' ? raw.messageTimestamp : raw.messageTimestamp?.low || 0;
+          if (ts && (ts * 1000) < bootTime - 60_000) return;
           if (raw.message.ephemeralMessage) raw.message = raw.message.ephemeralMessage.message;
           const m = await smsg(socks, raw);
           if (typeof main === 'function') main(socks, m, messages).catch((err) => console.error('[ ✿  ]  Main Sub »', err?.message || err));
@@ -238,7 +246,7 @@ export default {
     const activeSubNumbers = new Set();
     if (global.conns && Array.isArray(global.conns)) {
       for (const conn of global.conns) {
-        if (conn?.user?.id) activeSubNumbers.add(conn.user.id.split(':')[0]);
+        if (conn?.user?.id) activeSubNumbers.add(conn.user.id.split('@')[0].split(':')[0]);
       }
     }
     const activeSubs = allSubs.filter((num) => activeSubNumbers.has(num));
@@ -254,6 +262,9 @@ export default {
     const fullArgs = args.join(' ');
     const separatorIndex = fullArgs.search(/[|•\/]/);
     const rawPhone = separatorIndex === -1 ? fullArgs.trim() : fullArgs.slice(separatorIndex + 1).trim();
+    if (isCode && !rawPhone && String(msg.sender || '').endsWith('@lid')) {
+      return sock.reply(msg.chat, '❀ Indica tu número completo con código de país. Ejemplo: *.code 59899123456*', msg);
+    }
     const phone = normalizePhone(rawPhone || msg.sender.split('@')[0]);
     await startSubBot(msg, sock, caption, isCode, phone, msg.chat, isCommand);
     db.setUser(msg.sender, 'Subs', Date.now());

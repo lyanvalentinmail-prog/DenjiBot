@@ -33,16 +33,17 @@ export default {
       let sender = db.getChatUser(chatId, data.sender);
       let receiver = db.getChatUser(chatId, data.to);
       if (!Array.isArray(receiver.characters)) receiver.characters = [];
-      for (const id of data.ids) {
+      for (const rawId of data.ids) {
+        const id = String(rawId);
         const giftKey = chatId + '__' + id;
         let character = db.getCharacter(giftKey);
         if (!character || character.user !== data.sender) continue;
         character.user = data.to;
         character.claimedAt = Date.now();
         db.setCharacter(giftKey, character);
-        if (!receiver.characters.includes(id)) receiver.characters.push(id);
-        sender.characters = sender.characters.filter(c => c !== id);
-        if (sender.favorite === id) {
+        if (!receiver.characters.map(String).includes(id)) receiver.characters.push(id);
+        sender.characters = sender.characters.filter(c => String(c) !== id);
+        if (String(sender.favorite) === id) {
           db.setChatUser(chatId, data.sender, 'favorite', '');
           db.setUser(data.sender, 'favorite', '');
         }
@@ -63,7 +64,7 @@ export default {
       const chatId = msg.chat;
       db.setCreate('chats', chatId, 'regalosPendientes', []);
       const chat = db.getChat(chatId);
-      if (chat.adminonly || !chat.gacha) {
+      if (!chat.gacha) {
         return msg.reply(`ꕥ Los comandos de *Gacha* están desactivados en este grupo.\n\nUn *administrador* puede activarlos con el comando:\n» *${usedPrefix}gacha on*`);
       }
       const realSender = msg.sender;

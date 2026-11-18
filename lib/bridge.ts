@@ -27,7 +27,8 @@ export type BridgeMessage =
     | { type: 'runtime'; runtime: Runtime }
     | { type: 'qr'; qr: string }
     | { type: 'pairing'; code: string }
-    | { type: 'need_link'; reason: string };
+    | { type: 'need_link'; reason: string }
+    | { type: 'restart' };
 
 /** Código de salida que indica al panel que hace falta vincular la sesión. */
 export const EXIT_NEED_LINK = 10;

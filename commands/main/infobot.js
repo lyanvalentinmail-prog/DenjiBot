@@ -29,7 +29,7 @@ export default {
   category: 'main',
   description: 'Obtener información del bot.',
   run: async ({ msg, sock, usedPrefix, command, text }) => {
-    const botId = sock.user.id.split(':')[0] + "@s.whatsapp.net";
+    const botId = sock.user.id.split('@')[0].split(':')[0] + "@s.whatsapp.net";
     const botSettings = db.getSettings(botId) || {};
     const botname = botSettings.botname || 'Bot';
     const namebot = botSettings.namebot || 'Bot';
@@ -63,7 +63,7 @@ export default {
       minute: '2-digit'
     }).replace(/^./, m => m.toUpperCase());
 
-    const isOficialBot = botId === ((global.sock?.user?.id?.split(':')[0] ?? null) && ((global.sock?.user?.id?.split(':')[0] ?? null) && (global.sock.user.id.split(':')[0] + '@s.whatsapp.net')));
+    const isOficialBot = botId === ((global.sock?.user?.id?.split(':')[0] ?? null) && ((global.sock?.user?.id?.split(':')[0] ?? null) && (global.sock.user.id.split('@')[0].split(':')[0] + '@s.whatsapp.net')));
     const botType = isOficialBot ? 'Principal/Owner' : 'Sub Bot';
     const memory = getMemoryStats();
     const ram = `${formatMemory(memory.usedBytes)} / ${formatMemory(memory.limitBytes)} (${memory.percent.toFixed(2)}%)`;

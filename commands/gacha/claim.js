@@ -19,7 +19,7 @@ export default {
   run: async ({ msg, sock, usedPrefix, command, text }) => {
     try {
       let chat = db.getChat(msg.chat);
-      if (chat.adminonly || !chat.gacha) {
+      if (!chat.gacha) {
         return msg.reply(`ꕥ Los comandos de *Gacha* están desactivados en este grupo.\n\nUn *administrador* puede activarlos con:\n» *${usedPrefix}gacha on*`);
       }
       db.setCreate('chat_users', [msg.chat, msg.sender], 'lastClaim', 0);

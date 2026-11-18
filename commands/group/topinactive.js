@@ -3,7 +3,7 @@ export default {
   command: ['topinactive', 'topinactivos', 'topinactiveusers'],
   category: 'group',
   description: 'Ver el top de usuarios más inactivos del grupo.',
-  run: async ({ msg, sock, args, usedPrefix, text }) => {
+  run: async ({ msg, sock, args, usedPrefix, command }) => {
     const chatId = msg.chat;
     const allChatUsers = db.getChatUser(chatId);
     const now = new Date();
@@ -44,7 +44,7 @@ export default {
       mentions.push(u.jid);
     }
     if (page < totalPages) {
-      report += `\n> Para ver la siguiente página › *${text + usedPrefix} ${daysArg} ${page + 1}*`;
+      report += `\n> Para ver la siguiente página › *${usedPrefix + command} ${daysArg} ${page + 1}*`;
     }
     await sock.reply(chatId, report, msg, { mentions });
   }

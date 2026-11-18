@@ -3,7 +3,7 @@ export default {
   command: ['topcount', 'topmensajes', 'topmsgcount', 'topmessages'],
   category: 'group',
   description: 'Ver el top de usuarios con más mensajes en el grupo.',
-  run: async ({ msg, sock, args, usedPrefix, text }) => {
+  run: async ({ msg, sock, args, usedPrefix, command }) => {
     const chatId = msg.chat;
     const allChatUsers = db.getChatUser(chatId);
     const now = new Date();
@@ -14,7 +14,7 @@ export default {
     const cutoff = new Date(now.getTime() - daysArg * 24 * 60 * 60 * 1000);
     const ranking = [];
     for (const user of allChatUsers) {
-      let stats = user.stats;
+      const stats = user.stats && typeof user.stats === 'object' ? user.stats : {};
       const days = Object.entries(stats).filter(([date]) => new Date(date) >= cutoff);
       const totalMsgs = days.reduce((acc, [, d]) => acc + (d.msgs || 0), 0);
       const totalCmds = days.reduce((acc, [, d]) => acc + (d.cmds || 0), 0);
@@ -45,7 +45,7 @@ export default {
       report += `   » Mensajes: \`${u.totalMsgs}\`, Comandos: \`${u.totalCmds}\`\n`;
     }
     if (page < totalPages) {
-      report += `\n> Para ver la siguiente página › *${text + usedPrefix} ${daysArg} ${page + 1}*`;
+      report += `\n> Para ver la siguiente página › *${usedPrefix + command} ${daysArg} ${page + 1}*`;
     }
     await sock.reply(chatId, report, msg);
   }

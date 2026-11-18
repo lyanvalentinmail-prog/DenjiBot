@@ -5,7 +5,7 @@ export async function before({ msg, sock, groupMetadata, participants, isAdmins,
   if (!msg.isGroup || !msg.text) return;
   if (msg.isBot) return;
   if (!groupMetadata) return;
-  const botId = sock.user.id.split(':')[0] + '@s.whatsapp.net';
+  const botId = sock.user.id.split('@')[0].split(':')[0] + '@s.whatsapp.net';
   const chat = db.getChat(msg.chat) || {};
   const settings = db.getSettings(botId) || {};
   const isSelf = (settings.self ?? false) || (chat.isMute ?? false);
@@ -16,7 +16,19 @@ export async function before({ msg, sock, groupMetadata, participants, isAdmins,
   const hasAllowedLink = global.links?.channel && msg.text.includes(global.links.channel);
   const command = (msg.command || '').toLowerCase();
   if (hasAllowedLink || !isGroupLink || !chat?.antilinks || isAdmins || !isBotAdmins || !isPrimary) return;
-  await sock.sendMessage(msg.chat, { delete: { remoteJid: msg.chat, fromMe: false, id: msg.key.id, participant: msg.key.participant }});
+  // Permitir compartir el enlace del propio grupo
+  if (/chat\.whatsapp\.com\//i.test(msg.text)) {
+    const ownCode = await sock.groupInviteCode(msg.chat).catch(() => '');
+    if (ownCode && msg.text.includes(ownCode)) return;
+  }
+  await sock.sendMessage(msg.chat, {
+    delete: {
+      remoteJid: msg.chat,
+      fromMe: false,
+      id: msg.key.id,
+      participant: msg.key.participant || msg.key.participantAlt || msg.sender
+    }
+  }).catch(() => {});
   if (command !== 'invite') {
     const isChannelLink = /whatsapp\.com\/channel\//i.test(msg.text);
     const user = db.getUser(msg.sender);

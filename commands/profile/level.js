@@ -26,8 +26,8 @@ export default {
     const sortedLevel = users.sort((a, b) => (b.level || 0) - (a.level || 0));
     const rank = sortedLevel.findIndex(u => u.jid === who) + 1;
     const { min, xp } = xpRange(user.level, global.multiplier);
-    const progresoActual = user.exp - min;
-    const porcentaje = Math.floor((progresoActual / xp) * 100);
+    const progresoActual = Math.max(0, (user.exp || 0) - min);
+    const porcentaje = xp > 0 ? Math.floor((progresoActual / xp) * 100) : 0;
     const txt = `*「✿」Usuario* ◢ ${user.name} ◤
 
 ❖ Nivel › *${user.level || 0}*

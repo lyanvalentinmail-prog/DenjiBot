@@ -18,7 +18,7 @@ export default {
     db.setCreate('users', msg.sender, 'jointime', 0);
     let user = db.getUser(msg.sender);
     const grupo = msg.isGroup ? await getGroupName(sock, msg.chat) : 'Chat privado';
-    const botId = sock.user.id.split(':')[0] + '@s.whatsapp.net';
+    const botId = sock.user.id.split('@')[0].split(':')[0] + '@s.whatsapp.net';
     const botSettings = db.getSettings(botId) || {};
     const botname = botSettings.botname || 'Bot';
     const dueño = botSettings.owner || '';
@@ -35,10 +35,10 @@ export default {
     if (!match || !match[1]) {
       return msg.reply('《✧》 El enlace ingresado no es válido o está incompleto.');
     }
-    const isOficialBot = botId === ((global.sock?.user?.id?.split(':')[0] ?? null) && ((global.sock?.user?.id?.split(':')[0] ?? null) && (global.sock.user.id.split(':')[0] + '@s.whatsapp.net')));
+    const mainBotId = global.sock?.user?.id ? `${global.sock.user.id.split('@')[0].split(':')[0]}@s.whatsapp.net` : botId;
+    const isOficialBot = botId === mainBotId;
     const botType = isOficialBot ? 'Principal/Owner' : 'Sub Bot';
-    const pp = await sock.profilePictureUrl(msg.sender, 'image').catch(() => 'https://cdn.yuki-wabot.my.id/files/2PVh.jpeg');
-    const userName = user?.name || 'Usuario';
+    const userName = user?.name || msg.pushName || 'Usuario';
     const sugg = `❀ 𝗦𝗢𝗟𝗜𝗖𝗜𝗧𝗨𝗗 𝗥𝗘𝗖𝗜𝗕𝗜𝗗𝗔
     
 ✩ *Usuario ›* ${userName}
@@ -51,7 +51,9 @@ export default {
 ❐ *Versión ›* @latest`;
     if (typeof sugg !== 'string' || !sugg.trim()) return;
     if (isOficialBot) {
-      for (const num of global.owner) {
+      for (const raw of global.owner || []) {
+        const num = String(Array.isArray(raw) ? raw[0] : raw || '').replace(/\D/g, '');
+        if (!num) continue;
         try {
           await sock.sendMessage(`${num}@s.whatsapp.net`, { text: sugg });
         } catch {}

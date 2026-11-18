@@ -1,13 +1,14 @@
 import fs from 'fs';
+import path from 'path';
 import db from '#db';
+import { ROOT } from '#settings';
 
 export default {
   command: ['gp', 'groupinfo'],
   category: 'group',
   description: 'Ver la información del grupo.',
   run: async ({ msg, sock, usedPrefix, command, groupMetadata, participants }) => {
-    const groupName = groupMetadata?.subject;
-    const groupBanner = await sock.profilePictureUrl(msg.chat, 'image').catch(() => 'https://cdn.yuki-wabot.my.id/files/2PVh.jpeg');
+    const groupName = groupMetadata?.subject || 'Grupo';
     const groupCreator = groupMetadata?.owner ? '@' + groupMetadata.owner.split('@')[0] : 'Desconocido';
     const groupAdmins = participants.filter(p => (p.admin === 'admin' || p.admin === 'superadmin')) || [];
     const totalParticipants = participants.length;
@@ -17,7 +18,7 @@ export default {
     for (const user of allChatUsers) {
       usersMap[user.user_id] = user;
     }
-    const botId = sock.user.id.split(':')[0] + "@s.whatsapp.net";
+    const botId = sock.user.id.split('@')[0].split(':')[0] + "@s.whatsapp.net";
     const botSettings = db.getSettings(botId) || {};
     const botname = botSettings.botname;
     const monedas = botSettings.currency;
@@ -32,7 +33,7 @@ export default {
         totalCoins += Number(user.coins || 0) + Number(user.bank || 0);
       }
     }
-    const charactersFilePath = './core/characters.json';
+    const charactersFilePath = path.join(ROOT, 'core', 'characters.json');
     const data = await fs.promises.readFile(charactersFilePath, 'utf-8');
     const structure = JSON.parse(data);
     const allCharacters = Object.values(structure).flatMap(s => Array.isArray(s.characters) ? s.characters : []);

@@ -1,73 +1,121 @@
-import fetch from 'node-fetch'
+import axios from 'axios';
+import { DEFAULT_UA } from '#simple';
 
-export default {
-  command: ['instagram', 'ig', 'reel'],
-  category: 'downloads',
-  description: 'Descargar un reel de Instagram.',
-  run: async ({ msg, sock, args, usedPrefix, command }) => {
-    if (!args[0]) {
-      return msg.reply('《✧》 Por favor, ingrese un enlace de Instagram.')
-    }
-    if (!args[0].match(/instagram\.com\/(p|reel|share|tv|stories)\//)) {
-      return msg.reply('《✧》 El enlace no parece *válido*. Asegúrate de que sea de *Instagram*.')
-    }
-    try {
-      const data = await getInstagramMedia(args[0])
-      if (!data) return msg.reply('《✧》 No se pudo obtener el contenido.')
-      const caption = `ㅤ۟∩　ׅ　★ ໌　ׅ　🅘𝖦 🅓ownload　ׄᰙ\n\n${data.title ? `𖣣ֶㅤ֯⌗ ❀  ⬭ *Usuario* › ${data.title}\n` : ''}${data.caption ? `𖣣ֶㅤ֯⌗ ❀  ⬭ *Descripción* › ${data.caption}\n` : ''}${data.like ? `𖣣ֶㅤ֯⌗ ❀  ⬭ *Likes* › ${data.like}\n` : ''}${data.views ? `𖣣ֶㅤ֯⌗ ❀  ⬭ *Vistas* › ${data.views}\n` : ''}${data.duration ? `𖣣ֶㅤ֯⌗ ❀  ⬭ *Duración* › ${data.duration}\n` : ''}${data.format ? `𖣣ֶㅤ֯⌗ ❀  ⬭ *Formato* › ${data.format}\n` : ''}𖣣ֶㅤ֯⌗ ❀  ⬭ *Enlace* › ${args[0]}`
-      if (data.type === 'video') {
-        await sock.sendMessage(msg.chat, { video: { url: data.url }, caption, mimetype: 'video/mp4', fileName: 'ig.mp4' }, { quoted: msg })
-      } else if (data.type === 'image') {
-        await sock.sendMessage(msg.chat, { image: { url: data.url }, caption }, { quoted: msg })
-      } else {
-        throw new Error('Contenido no soportado.')
-      }
-    } catch (e) {
-      await msg.reply(`> An unexpected error occurred while executing command *${usedPrefix + command}*. Please try again or contact support if the issue persists.\n> [Error: *${e.message}*]`)
-    }
-  }
+const IG_REGEX = /https?:\/\/(www\.)?(instagram\.com|instagr\.am)\/(p|reel|reels|tv|stories|share)\/\S+/i;
+
+async function fetchJson(url) {
+  const { data } = await axios.get(url, {
+    timeout: 22_000,
+    headers: { 'User-Agent': DEFAULT_UA, Accept: 'application/json' }
+  });
+  return data;
+}
+
+function guessType(item) {
+  const t = String(item?.type || item?.mime || '').toLowerCase();
+  const u = String(item?.url || '');
+  if (t.includes('video') || /\.mp4(\?|$)/i.test(u)) return 'video';
+  return 'image';
 }
 
 async function getInstagramMedia(url) {
-  const apis = [
-    { endpoint: `${global.APIs.yuki.url}/dl/instagram?url=${encodeURIComponent(url)}&key=${global.APIs.yuki.key}`, extractor: (res) => {
-        if (!res.status || !res.data || !res.data.length) return null
-        const media = res.data[0]
-        if (!media?.url) return null
-        return { type: 'video', title: null, caption: null, resolution: null, format: 'mp4', url: media.url, thumbnail: media.thumbnail || null }
-      }
-    },
-    { endpoint: `${global.APIs.ootaizumi.url}/downloader/instagram/v1?url=${encodeURIComponent(url)}`, extractor: (res) => {
-        if (!res.status || !res.result?.media?.length) return null
-        const media = res.result.media[0]
-        if (!media?.url) return null
-        return { type: media.isVideo ? 'video' : 'image', title: res.result.metadata?.author || null, caption: null, like: res.result.metadata?.like === -1 ? null : res.result.metadata?.like, views: res.result.metadata?.views || null, duration: res.result.metadata?.duration ? `${Math.round(res.result.metadata.duration)}s` : null, resolution: null, format: media.isVideo ? 'mp4' : 'jpg', url: media.url, thumbnail: res.result.ppc || null }
-      }
-    },
-    { endpoint: `${global.APIs.delirius.url}/download/instagram?url=${encodeURIComponent(url)}`, extractor: (res) => {
-        if (!res.status || !res.data || !res.data.length) return null
-        const media = res.data[0]
-        if (!media?.url) return null
-        return { type: media.type || (media.url.includes('.mp4') ? 'video' : 'image'), title: null, caption: null, resolution: null, format: media.type === 'video' ? 'mp4' : 'jpg', url: media.url }
-      }
-    },
-    { endpoint: `${global.APIs.zenzxz.url}/download/instagram?url=${encodeURIComponent(url)}`, extractor: (res) => {
-        if (!res.status || !res.result) return null
-        if (!res.result.url) return null
-        return { type: res.result.is_video ? 'video' : 'image', title: res.result.username || null, caption: res.result.caption || null, resolution: null, format: res.result.is_video ? 'mp4' : 'jpg', url: res.result.url, thumbnail: res.result.thumbnail || null }
-      }
-    }
-  ]
+  const enc = encodeURIComponent(url);
+  const delirius = global.APIs?.delirius?.url || 'https://api.delirius.online';
+  const vreden = global.APIs?.vreden?.url || 'https://api.vreden.web.id';
+  const yuki = global.APIs?.yuki;
 
-  for (const { endpoint, extractor } of apis) {
-    try {
-      const res = await fetch(endpoint).then(r => r.json())
-      const result = extractor(res)
-      if (result) return result
-    } catch (error) {
-      continue
+  const providers = [
+    async () => {
+      const res = await fetchJson(`${delirius}/download/instagram?url=${enc}`);
+      const list = Array.isArray(res?.data) ? res.data : [];
+      return list.filter(x => x?.url).map(x => ({ url: x.url, type: guessType(x) }));
+    },
+    async () => {
+      const res = await fetchJson(`${delirius}/download/instagramv2?url=${enc}`);
+      const list = Array.isArray(res?.data) ? res.data : [];
+      return list.filter(x => x?.url).map(x => ({ url: x.url, type: guessType(x) }));
+    },
+    async () => {
+      const res = await fetchJson(`${vreden}/api/v1/download/instagram?url=${enc}`);
+      const list = Array.isArray(res?.result?.data) ? res.result.data : Array.isArray(res?.result) ? res.result : [];
+      return list.filter(x => x?.url).map(x => ({ url: x.url, type: guessType(x) }));
+    },
+    async () => {
+      const res = await fetchJson(`https://api.siputzx.my.id/api/d/igdl?url=${enc}`);
+      const list = Array.isArray(res?.data) ? res.data : [];
+      return list.filter(x => x?.url).map(x => ({ url: x.url, type: guessType(x) }));
+    },
+    async () => {
+      const res = await fetchJson(`https://api.ryuzei.xyz/download/instagram?url=${enc}`);
+      const raw = res?.result || res?.data;
+      const list = Array.isArray(raw) ? raw : raw?.url ? [raw] : [];
+      return list.filter(x => x?.url).map(x => ({ url: x.url, type: guessType(x) }));
+    },
+    async () => {
+      if (!yuki?.url) return [];
+      const res = await fetchJson(`${yuki.url}/dl/instagram?url=${enc}&key=${yuki.key}`);
+      const raw = res?.data?.result || res?.data || res?.result;
+      const list = Array.isArray(raw) ? raw : raw?.url ? [raw] : [];
+      return list.filter(x => x?.url).map(x => ({ url: x.url, type: guessType(x) }));
     }
-    await new Promise(r => setTimeout(r, 500))
+  ];
+
+  for (const fn of providers) {
+    try {
+      const items = await fn();
+      if (Array.isArray(items) && items.length) {
+        const seen = new Set();
+        return items.filter(it => {
+          if (!it.url || seen.has(it.url)) return false;
+          seen.add(it.url);
+          return true;
+        });
+      }
+    } catch {}
   }
-  return null
+  return [];
 }
+
+export default {
+  command: ['instagram', 'ig', 'igdl'],
+  category: 'downloads',
+  description: 'Descargar fotos, videos y reels de Instagram.',
+  run: async ({ msg, sock, args, usedPrefix, command }) => {
+    const raw = args.join(' ').trim();
+    if (!raw) {
+      return msg.reply('《✧》 Por favor, ingresa un enlace de Instagram.');
+    }
+    const url = raw.match(IG_REGEX)?.[0] || (raw.includes('instagram.com/') ? raw.split(/\s+/)[0] : '');
+    if (!url) {
+      return msg.reply('《✧》 El enlace no parece válido. Asegúrate de que sea una publicación o reel de Instagram.');
+    }
+    try {
+      const items = await getInstagramMedia(url);
+      if (!items.length) {
+        return msg.reply('《✧》 No se pudo obtener el contenido de Instagram. Verifica que la publicación sea pública.');
+      }
+      const caption = `ㅤ۟∩　ׅ　★ ໌　ׅ　🅘𝗇𝗌𝗍𝖺𝗀𝗋𝖺𝗆 🅓ownload　ׄᰙ\n\n𖣣ֶㅤ֯⌗ ❀  ⬭ *Enlace* › ${url}`;
+      if (items.length === 1) {
+        const item = items[0];
+        if (item.type === 'video') {
+          await sock.sendMessage(
+            msg.chat,
+            { video: { url: item.url }, mimetype: 'video/mp4', caption },
+            { quoted: msg }
+          );
+        } else {
+          await sock.sendMessage(msg.chat, { image: { url: item.url }, caption }, { quoted: msg });
+        }
+      } else {
+        const medias = items.slice(0, 10).map((it, idx) => ({
+          type: it.type === 'video' ? 'video' : 'image',
+          data: { url: it.url },
+          ...(idx === 0 ? { caption } : {})
+        }));
+        await sock.sendAlbumMessage(msg.chat, medias, { quoted: msg });
+      }
+    } catch (e) {
+      await msg.reply(`> Error al ejecutar *${usedPrefix + command}*.\n> [Error: *${e.message}*]`);
+    }
+  }
+};

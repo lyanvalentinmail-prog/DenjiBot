@@ -5,10 +5,10 @@ export default {
   description: 'Curar salud para salir de aventuras.',
   run: async ({ msg, sock, usedPrefix, command }) => {
     const chatData = db.getChat(msg.chat);
-    if (chatData.adminonly || !chatData.economy) {
+    if (!chatData.economy) {
       return msg.reply(`ꕥ Los comandos de *Economía* están desactivados en este grupo.\n\nUn *administrador* puede activarlos con el comando:\n» *${usedPrefix}economy on*`);
     }    
-    const botId = sock.user.id.split(':')[0] + '@s.whatsapp.net';
+    const botId = sock.user.id.split('@')[0].split(':')[0] + '@s.whatsapp.net';
     const bot = db.getSettings(botId);
     const currency = bot.currency;    
     const who = msg.mentionedJid?.[0] || msg.quoted?.sender || null;

@@ -1,6 +1,17 @@
+import fs from 'fs';
+import path from 'path';
 import { normalizeJid, resolveParticipantJid, resolveJidSync, deleteCachedMeta, getCachedMeta, setCachedMeta } from '#serialize';
+import { ROOT, DEFAULT_BANNER } from '#settings';
 import chalk from 'chalk';
 import db from '#db';
+
+function getFallbackImage() {
+  const local = path.join(ROOT, DEFAULT_BANNER);
+  try {
+    if (fs.existsSync(local)) return fs.readFileSync(local);
+  } catch {}
+  return null;
+}
 
 function getGroupAdmins(participants) {
   return (participants ?? []).filter(p => p.admin === 'admin' || p.admin === 'superadmin').map(p => p.id).filter(Boolean);
@@ -28,7 +39,7 @@ export default async (sock, msg) => {
         return null;
       })();
       const groupAdmins = metadata ? getGroupAdmins(metadata.participants) : [];
-      const botId = sock.user.id.split(':')[0] + '@s.whatsapp.net';
+      const botId = sock.user.id.split('@')[0].split(':')[0] + '@s.whatsapp.net';
       const chat = db.getChat(anu.id) || {};
       const settings = db.getSettings(botId) || {};
       const primaryBotId = chat?.primaryBot;
@@ -44,7 +55,13 @@ export default async (sock, msg) => {
         if (!jid) continue;
         const phone = jid.split('@')[0];
         const needsPhoto = metadata && (!primaryBotId || primaryBotId === botId) && ((anu.action === 'add' && chat.welcome) || (['remove', 'leave'].includes(anu.action) && chat.goodbye));
-        const pp = needsPhoto ? await sock.profilePictureUrl(jid, 'image').catch(() => 'https://files.yuki-wabot.my.id/cdn/2PVh.jpeg') : null;
+        const ppUrl = needsPhoto ? await sock.profilePictureUrl(jid, 'image').catch(() => null) : null;
+        const buildImgPayload = (caption) => {
+          if (ppUrl) return { image: { url: ppUrl }, caption, mentions: [jid] };
+          const fallback = getFallbackImage();
+          if (fallback) return { image: fallback, caption, mentions: [jid] };
+          return { text: caption, mentions: [jid] };
+        };
         if (anu.action === 'add' && chat?.welcome && (!primaryBotId || primaryBotId === botId)) {
           if (!metadata) continue;
           let caption;
@@ -54,7 +71,7 @@ export default async (sock, msg) => {
             const mainPrefix = Array.isArray(settings.prefix) ? (settings.prefix[0] || '.') : (typeof settings.prefix === 'string' ? settings.prefix[0] : '.');
             caption = `╭┈──̇─̇─̇────̇─̇─̇──◯◝\n┊「 *Bienvenido (⁠ ⁠ꈍ⁠ᴗ⁠ꈍ⁠)* 」\n┊︶︶︶︶︶︶︶︶︶︶︶\n┊  *Nombre ›* @${phone}\n┊  *Grupo ›* ${metadata.subject}\n┊┈─────̇─̇─̇─────◯◝\n┊➤ *Usa ${mainPrefix}menu para ver los comandos.*\n┊➤ *Ahora somos ${memberCount} miembros.*\n┊ ︿︿︿︿︿︿︿︿︿︿︿\n╰─────────────────╯`;
           }
-          await sock.sendMessage(anu.id, { image: { url: pp }, caption, mentions: [jid] });
+          await sock.sendMessage(anu.id, buildImgPayload(caption));
         }
         if ((anu.action === 'remove' || anu.action === 'leave') && chat?.goodbye && (!primaryBotId || primaryBotId === botId)) {
           if (!metadata) continue;
@@ -64,7 +81,7 @@ export default async (sock, msg) => {
           } else {
             caption = `╭┈──̇─̇─̇────̇─̇─̇──◯◝\n┊「 *Hasta pronto (⁠╥⁠﹏⁠╥⁠)* 」\n┊︶︶︶︶︶︶︶︶︶︶︶\n┊  *Nombre ›* @${phone}\n┊  *Grupo ›* ${metadata.subject}\n┊┈─────̇─̇─̇─────◯◝\n┊➤ *Ojalá que vuelva pronto.*\n┊➤ *Ahora somos ${memberCount} miembros.*\n┊ ︿︿︿︿︿︿︿︿︿︿︿\n╰─────────────────╯`;
           }
-          await sock.sendMessage(anu.id, { image: { url: pp }, caption, mentions: [jid] });
+          await sock.sendMessage(anu.id, buildImgPayload(caption));
         }
         if (anu.action === 'remove' || anu.action === 'leave') {
           const user = db.getChatUser(anu.id, jid);
@@ -74,12 +91,18 @@ export default async (sock, msg) => {
           }
         }
         if (anu.action === 'promote' && chat?.alerts && (!primaryBotId || primaryBotId === botId)) {
-          const authorJid = normalizeJid(anu.author) || anu.author;
-          await sock.sendMessage(anu.id, { text: `「✎」 *@${phone}* ha sido promovido a Administrador por *@${authorJid.split('@')[0]}.*`, mentions: [jid, authorJid, ...groupAdmins] });
+          const authorJid = resolveEventParticipant(anu.author, sock);
+          const text = authorJid
+            ? `「✎」 *@${phone}* ha sido promovido a Administrador por *@${authorJid.split('@')[0]}.*`
+            : `「✎」 *@${phone}* ha sido promovido a Administrador.`;
+          await sock.sendMessage(anu.id, { text, mentions: [jid, ...(authorJid ? [authorJid] : []), ...groupAdmins] });
         }
         if (anu.action === 'demote' && chat?.alerts && (!primaryBotId || primaryBotId === botId)) {
-          const authorJid = normalizeJid(anu.author) || anu.author;
-          await sock.sendMessage(anu.id, { text: `「✎」 *@${phone}* ha sido degradado de Administrador por *@${authorJid.split('@')[0]}.*`, mentions: [jid, authorJid, ...groupAdmins] });
+          const authorJid = resolveEventParticipant(anu.author, sock);
+          const text = authorJid
+            ? `「✎」 *@${phone}* ha sido degradado de Administrador por *@${authorJid.split('@')[0]}.*`
+            : `「✎」 *@${phone}* ha sido degradado de Administrador.`;
+          await sock.sendMessage(anu.id, { text, mentions: [jid, ...(authorJid ? [authorJid] : []), ...groupAdmins] });
         }
       }
     } catch (err) {

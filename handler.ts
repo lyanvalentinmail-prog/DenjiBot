@@ -95,7 +95,7 @@ function getAdmins(metadata: any, participants: any[]): Set<string> {
     const admins = new Set<string>();
     for (const participant of participants) {
         if (participant.admin !== 'admin' && participant.admin !== 'superadmin') continue;
-        for (const jid of [participant.id, participant.lid, participant.phoneNumber]) {
+        for (const jid of [participant.id, participant.rawId, participant.lid, participant.phoneNumber, participant.jid]) {
             if (!jid) continue;
             const num = normalizeNumber(jid);
             if (num) {
@@ -123,26 +123,24 @@ function isSameNumber(a: string, b: string): boolean {
     return Boolean(na && nb && (na === nb || stripMexOne(na) === stripMexOne(nb)));
 }
 
-const PRIVATE_ALLOWED_CMDS = new Set([
-    'allmenu', 'help', 'menu', 'ayuda', 'comandos', 'setmenu', 'menustyle',
-    'infobot', 'botinfo', 'invite', 'invitar', 'ping', 'speed', 'p',
-    'status', 'estado', 'report', 'reporte', 'sug', 'suggest',
-    'bots', 'sockets', 'join', 'unir', 'logout', 'reload', 'self',
-    'setbanner', 'setbotbanner', 'setchannel', 'setbotchannel',
-    'setbotcurrency', 'setcurrency', 'seticon', 'setboticon',
-    'setlink', 'setbotlink', 'setbotname', 'setname',
-    'setbotowner', 'setowner', 'setimage', 'setpfp',
-    'setprefix', 'setbotprefix', 'setstatus', 'setusername',
-    'code', 'qr'
-]);
+function hasAdminNumber(adminSet: Set<string>, ...candidates: any[]): boolean {
+    for (const raw of candidates) {
+        if (!raw) continue;
+        const num = normalizeNumber(raw);
+        if (num && (adminSet.has(num) || adminSet.has(stripMexOne(num)))) return true;
+    }
+    return false;
+}
 
 export async function handler(sock: any, msg: any): Promise<any> {
     if (!msg?.chat || !msg?.sender) return;
     const startTime = Date.now();
 
-    const botNumber = normalizeNumber(sock?.user?.id);
+    const botNumber = normalizeNumber(sock?.user?.id || sock?.authState?.creds?.me?.id);
     if (!botNumber) return;
     const botJid = `${botNumber}@s.whatsapp.net`;
+    const botLidNumber = normalizeNumber(sock?.user?.lid || sock?.authState?.creds?.me?.lid);
+    const botLid = botLidNumber ? `${botLidNumber}@lid` : '';
 
     const dedupeKey = msg.key?.id ? `${botNumber}:${msg.key.id}` : '';
     if (dedupeKey) {
@@ -158,16 +156,19 @@ export async function handler(sock: any, msg: any): Promise<any> {
         ...Array.from(config.owner),
         ...(Array.isArray(g.owner) ? g.owner : [])
     ];
-    const isOwner = ownerNumbers.some(num => isSameNumber(sender, num));
-    const isROwner =
-        isOwner ||
+    const configuredOwner = ownerNumbers.some(num => isSameNumber(sender, num));
+    const isSelfBot =
         isSameNumber(sender, botJid) ||
-        (settings.owner ? isSameNumber(sender, settings.owner) : false);
+        (botLid ? isSameNumber(sender, botLid) : false) ||
+        Boolean(msg.fromMe);
+    const isSettingsOwner = settings.owner ? isSameNumber(sender, settings.owner) : false;
+    const isROwner = configuredOwner || isSelfBot || isSettingsOwner;
+    const isOwner = isROwner;
 
     let groupMetadata: any = null;
     if (msg.isGroup) {
         groupMetadata = getCachedMeta(msg.chat);
-        if (!groupMetadata) {
+        if (!groupMetadata && typeof sock?.groupMetadata === 'function') {
             groupMetadata = await sock.groupMetadata(msg.chat).catch(() => null);
             if (groupMetadata) setCachedMeta(msg.chat, groupMetadata);
         }
@@ -176,10 +177,10 @@ export async function handler(sock: any, msg: any): Promise<any> {
     const adminSet = getAdmins(groupMetadata, participants);
     const senderNum = normalizeNumber(sender);
     const isBotAdmins = msg.isGroup
-        ? adminSet.has(botNumber) || adminSet.has(stripMexOne(botNumber))
+        ? hasAdminNumber(adminSet, botNumber, botLidNumber)
         : false;
     const isAdmins = msg.isGroup
-        ? adminSet.has(senderNum) || adminSet.has(stripMexOne(senderNum))
+        ? hasAdminNumber(adminSet, senderNum, msg.key?.participant, msg.key?.participantAlt)
         : false;
 
     const hooks: HookEntry[] = g.cmdsExecute ?? [];
@@ -238,26 +239,30 @@ export async function handler(sock: any, msg: any): Promise<any> {
                 : [[null, null]];
     const match = matches.find(p => p[0]) || null;
 
+    let handledByBefore = false;
     const botprimaryId: string | null = chat?.primaryBot || null;
-    if (!botprimaryId || botprimaryId === botJid) {
+    if (!botprimaryId || isSameNumber(botprimaryId, botJid)) {
         const beforeHooks = hooks.filter(p => p.type === 'before');
         if (beforeHooks.length) {
-            await Promise.allSettled(
+            const results = await Promise.allSettled(
                 beforeHooks.map(p =>
                     p.fn({
                         msg, sock, match, groupMetadata, participants,
                         isAdmins, isBotAdmins, isOwner, __dirname: p.dirname
-                    }).catch((e: any) =>
-                        console.error(chalk.gray(`[ ✿ ] Error before-plugin ${p.key}: ${e?.message || e}`))
-                    )
+                    }).catch((e: any) => {
+                        console.error(chalk.gray(`[ ✿ ] Error before-plugin ${p.key}: ${e?.message || e}`));
+                        return false;
+                    })
                 )
             );
+            handledByBefore = results.some(r => r.status === 'fulfilled' && r.value === true);
         }
     }
 
     if (!match || msg.isCommands) return;
 
     const usedPrefix = String((match[0] as any)?.[0] || '');
+    if (!usedPrefix && handledByBefore) return;
     const rest = textBody.slice(usedPrefix.length).trim();
     if (!rest && !customCmd) return;
 
@@ -285,9 +290,7 @@ export async function handler(sock: any, msg: any): Promise<any> {
 
     if (!isROwner && settings.self) return;
 
-    if (!msg.isGroup && !isOwner && !isROwner && !PRIVATE_ALLOWED_CMDS.has(command)) return;
-
-    if (chat?.isBanned && !(command === 'bot' && ['on', 'enable'].includes(text.toLowerCase())) && !isOwner) {
+    if (msg.isGroup && chat?.isBanned && !(command === 'bot' && ['on', 'enable'].includes(text.toLowerCase())) && !isOwner) {
         const displayPrefix = usedPrefix || config.prefix || '.';
         await msg.reply(
             `ꕥ El bot *${settings.botname || config.botName}* está desactivado en este grupo.\n\n` +
@@ -298,7 +301,7 @@ export async function handler(sock: any, msg: any): Promise<any> {
 
     const reactor = createReactor(sock, msg);
 
-    if (chat?.adminonly && !isAdmins && !isOwner) {
+    if (msg.isGroup && chat?.adminonly && !isAdmins && !isOwner) {
         reactor.event('denied');
         return;
     }
@@ -327,7 +330,12 @@ export async function handler(sock: any, msg: any): Promise<any> {
         return msg.reply('《✧》 Este comando solo puede ser utilizado por el dueño del bot.');
     }
 
-    if (cmdData.isGroup && !msg.isGroup) {
+    const requiresGroup =
+        cmdData.isGroup ||
+        cmdData.isAdmin ||
+        cmdData.botAdmin ||
+        cmdData.category === 'group';
+    if (requiresGroup && !msg.isGroup) {
         reactor.event('denied');
         return msg.reply('《✧》 Este comando solo se puede usar en grupos.');
     }

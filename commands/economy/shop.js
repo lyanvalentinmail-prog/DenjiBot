@@ -5,10 +5,10 @@ export default {
   description: 'Ver la tienda del bot.',
   run: async ({ msg, sock, args, usedPrefix, command, text }) => {
     const chat = db.getChat(msg.chat);
-    if (chat.adminonly || !chat.economy) {
+    if (!chat.economy) {
       return msg.reply(`ꕥ Los comandos de *Economía* están desactivados en este grupo.\n\nUn *administrador* puede activarlos con el comando:\n» *${usedPrefix}economy on*`);
     }    
-    const botId = sock.user.id.split(':')[0] + '@s.whatsapp.net';
+    const botId = sock.user.id.split('@')[0].split(':')[0] + '@s.whatsapp.net';
     const settings = db.getSettings(botId);
     const currency = settings?.currency
     db.setCreate('chat_users', [msg.chat, msg.sender], 'inventory', {});

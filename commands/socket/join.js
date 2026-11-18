@@ -3,10 +3,10 @@ export default {
   command: ['join', 'unir'],
   category: 'socket',
   description: 'Unir el bot a un grupo.',
-  run: async ({ msg, sock, args }) => {
-    const idBot = sock.user.id.split(':')[0] + '@s.whatsapp.net';
+  run: async ({ msg, sock, args, isROwner }) => {
+    const idBot = sock.user.id.split('@')[0].split(':')[0] + '@s.whatsapp.net';
     const config = db.getSettings(idBot) || {};
-    const isOwner2 = [idBot, ...(config.owner ? [config.owner] : []), ...global.owner.map(num => num + '@s.whatsapp.net')].includes(msg.sender);
+    const isOwner2 = isROwner || [idBot, ...(config.owner ? [config.owner] : []), ...global.owner.map(num => num + '@s.whatsapp.net')].includes(msg.sender);
     if (!isOwner2) return msg.reply(global.mess.socket);
     if (!args[0]) return msg.reply('《✧》 Ingresa el enlace del grupo para unir el bot.');
     const linkRegex = /chat\.whatsapp\.com\/([0-9A-Za-z]{20,24})/i;

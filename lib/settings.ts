@@ -254,7 +254,7 @@ export function resolveMenuBanner(settings: Settings, theme: MenuTheme = setting
 
 /** Observa `settings.json` y avisa cuando cambia (lo usa el proceso del bot). */
 export function watchSettings(onChange: (settings: Settings) => void): void {
-    fs.watchFile(SETTINGS_FILE, { interval: 1500 }, () => {
+    fs.watchFile(SETTINGS_FILE, { interval: 1500, persistent: false }, () => {
         try {
             onChange(loadSettings());
         } catch {}

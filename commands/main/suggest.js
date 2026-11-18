@@ -29,13 +29,15 @@ export default {
     const tipo2 = esReporte ? 'ꕥ Reporte' : 'ꕥ Sugerencia';
     const name = user?.name || msg.pushName || 'Usuario desconocido';
     const numero = msg.sender.split('@')[0];
-    const pp = await sock.profilePictureUrl(msg.sender, 'image').catch(() => 'https://cdn.yuki-wabot.my.id/files/2PVh.jpeg');
-    const botId = sock.user.id.split(':')[0] + '@s.whatsapp.net';
+    const botId = sock.user.id.split('@')[0].split(':')[0] + '@s.whatsapp.net';
     const botSettings = db.getSettings(botId) || {};
-    const isOficialBot = botId === ((global.sock?.user?.id?.split(':')[0] ?? null) && ((global.sock?.user?.id?.split(':')[0] ?? null) && (global.sock.user.id.split(':')[0] + '@s.whatsapp.net')));
+    const mainBotId = global.sock?.user?.id ? `${global.sock.user.id.split('@')[0].split(':')[0]}@s.whatsapp.net` : botId;
+    const isOficialBot = botId === mainBotId;
     const botType = isOficialBot ? 'Principal/Owner' : 'Sub Bot';
     let reportMsg = `🫗۫᷒ᰰ⃘ׅ᷒  ۟　\`${tipo}\`　ׅ　ᩡ\n\n𖹭  ׄ  ְ ❖ *Nombre*\n> ${name}\n\n𖹭  ׄ  ְ ❖ *Número*\n> wa.me/${numero}\n\n𖹭  ׄ  ְ ❖ *Fecha*\n> ${fechaLocal}\n\n𖹭  ׄ  ְ ❖ *Socket*\n> ${botType}\n\n𖹭  ׄ  ְ ❖ *Mensaje*\n> ${texto}\n\n`;
-    for (const num of global.owner) {
+    for (const raw of global.owner || []) {
+      const num = String(Array.isArray(raw) ? raw[0] : raw || '').replace(/\D/g, '');
+      if (!num) continue;
       try {
         await sock.sendMessage(`${num}@s.whatsapp.net`, { text: reportMsg });
       } catch {}
