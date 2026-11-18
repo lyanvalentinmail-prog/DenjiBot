@@ -1,7 +1,58 @@
 import axios from 'axios';
 import path from 'path';
-import { lookup } from 'mime-types';
 import * as cheerio from 'cheerio';
+
+const MIME_BY_EXT = {
+  '.apk': 'application/vnd.android.package-archive',
+  '.apks': 'application/zip',
+  '.xapk': 'application/zip',
+  '.zip': 'application/zip',
+  '.rar': 'application/vnd.rar',
+  '.7z': 'application/x-7z-compressed',
+  '.tar': 'application/x-tar',
+  '.gz': 'application/gzip',
+  '.pdf': 'application/pdf',
+  '.epub': 'application/epub+zip',
+  '.doc': 'application/msword',
+  '.docx': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+  '.xls': 'application/vnd.ms-excel',
+  '.xlsx': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+  '.ppt': 'application/vnd.ms-powerpoint',
+  '.pptx': 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+  '.txt': 'text/plain',
+  '.json': 'application/json',
+  '.csv': 'text/csv',
+  '.html': 'text/html',
+  '.js': 'text/javascript',
+  '.mp3': 'audio/mpeg',
+  '.m4a': 'audio/mp4',
+  '.ogg': 'audio/ogg',
+  '.opus': 'audio/opus',
+  '.wav': 'audio/wav',
+  '.flac': 'audio/flac',
+  '.mp4': 'video/mp4',
+  '.mkv': 'video/x-matroska',
+  '.webm': 'video/webm',
+  '.mov': 'video/quicktime',
+  '.avi': 'video/x-msvideo',
+  '.jpg': 'image/jpeg',
+  '.jpeg': 'image/jpeg',
+  '.png': 'image/png',
+  '.gif': 'image/gif',
+  '.webp': 'image/webp',
+  '.svg': 'image/svg+xml',
+  '.iso': 'application/x-iso9660-image',
+  '.exe': 'application/vnd.microsoft.portable-executable',
+  '.mcpack': 'application/zip',
+  '.mcaddon': 'application/zip',
+  '.mcworld': 'application/zip'
+};
+
+function lookup(ext) {
+  if (!ext) return null;
+  const key = ext.startsWith('.') ? ext.toLowerCase() : `.${ext.toLowerCase()}`;
+  return MIME_BY_EXT[key] || null;
+}
 
 export default {
   command: ['mediafire', 'mf'],

@@ -1,6 +1,4 @@
-import fetch from 'node-fetch';
 import axios from 'axios';
-import FormData from 'form-data';
 import db from '#db';
 
 const langs = { typescript: 'ts', javascript: 'js', python: 'py', html: 'html', css: 'css', java: 'java', cpp: 'cpp', c: 'c', json: 'json', bash: 'sh', sql: 'sql', rust: 'rs', go: 'go', php: 'php', ruby: 'rb' };
@@ -41,12 +39,12 @@ function detectLanguage(query, response) {
   return null;
 }
 
-async function uploadToUguu(buffer, mimetype) {
+async function uploadToUguu(buffer, mimetype = 'image/jpeg') {
   try {
     const body = new FormData();
-    const extension = mimetype.split('/')[1] || 'jpg';
-    body.append('files[]', buffer, `file.${extension}`);
-    const res = await fetch('https://uguu.se/upload.php', { method: 'POST', body, headers: body.getHeaders() });
+    const extension = mimetype.split('/')[1]?.split(';')[0] || 'jpg';
+    body.append('files[]', new Blob([buffer], { type: mimetype }), `file.${extension}`);
+    const res = await globalThis.fetch('https://uguu.se/upload.php', { method: 'POST', body });
     const json = await res.json();
     return json.files?.[0]?.url ?? null;
   } catch {

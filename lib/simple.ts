@@ -5,7 +5,6 @@ import crypto from 'node:crypto';
 import { spawn } from 'node:child_process';
 import axios from 'axios';
 import { fileTypeFromBuffer } from 'file-type';
-import GraphemeSplitter from 'grapheme-splitter';
 import {
     proto,
     delay,
@@ -23,7 +22,9 @@ import db from '#db';
 import { getSessionDir } from './settings.ts';
 import { sendStickerPack } from './packmessage.ts';
 
-const splitter = new GraphemeSplitter();
+const graphemeSegmenter = new Intl.Segmenter(undefined, { granularity: 'grapheme' });
+export const splitGraphemes = (input: string): string[] =>
+    Array.from(graphemeSegmenter.segment(String(input || '')), s => s.segment);
 const { imageToWebp, videoToWebp, writeExifImg, writeExifVid } = exif;
 
 export class BoundedMap<K = string, V = any> {
@@ -809,7 +810,7 @@ export async function smsg(sock: any, msg: any): Promise<any> {
         let activePrefixes: string[] = [];
         if (botSetting.prefix === 1) activePrefixes = [];
         else if (Array.isArray(botSetting.prefix)) activePrefixes = botSetting.prefix;
-        else if (typeof botSetting.prefix === 'string') activePrefixes = splitter.splitGraphemes(botSetting.prefix);
+        else if (typeof botSetting.prefix === 'string') activePrefixes = splitGraphemes(botSetting.prefix);
         else activePrefixes = ['.', '/', '!', '#'];
 
         msg.usedPrefix = '';

@@ -1,6 +1,4 @@
-import fs from 'fs';
 import os from 'os';
-import { sizeFormatter } from 'human-readable';
 import db from '#db';
 
 function getDefaultHostId() {
@@ -10,7 +8,14 @@ function getDefaultHostId() {
   return 'Default_host_id';
 }
 
-const format = sizeFormatter({ std: 'JEDEC', decimalPlaces: 2, keepTrailingZeroes: false, render: (literal, symbol) => `${literal} ${symbol}B` });
+function format(bytes) {
+  const n = Number(bytes) || 0;
+  if (n <= 0) return '0 B';
+  const units = ['B', 'KB', 'MB', 'GB', 'TB'];
+  const i = Math.min(units.length - 1, Math.floor(Math.log(n) / Math.log(1024)));
+  const val = parseFloat((n / Math.pow(1024, i)).toFixed(2));
+  return `${val} ${units[i]}`;
+}
 
 export default {
   command: ['status', 'estado'],

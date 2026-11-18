@@ -201,7 +201,14 @@ export function startBot(options: StartOptions = {}): void {
             panelLog('Bot detenido.');
         } else {
             panelLog(chalk.red(`El bot se cerró (${signal ? 'señal ' + signal : 'código ' + code}).`));
-            if (loadSettings().autoRestart) scheduleRestart();
+            const recent = bot.logs.slice(-25).join('\n');
+            const missingPkg = recent.match(/Cannot find package '([^']+)'/)?.[1];
+            if (missingPkg) {
+                bot.notice = `Falta la dependencia "${missingPkg}". Ejecuta "npm install" o usa Start para instalarla.`;
+                panelLog(chalk.yellow(bot.notice));
+            } else if (loadSettings().autoRestart) {
+                scheduleRestart();
+            }
         }
         bot.events.emit('update');
     });

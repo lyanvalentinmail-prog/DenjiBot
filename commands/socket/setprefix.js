@@ -1,4 +1,4 @@
-import GraphemeSplitter from 'grapheme-splitter';
+import { splitGraphemes } from '#simple';
 import db from '#db';
 
 export default {
@@ -24,8 +24,7 @@ export default {
       db.setSettings(idBot, 'prefix', 1);
       return msg.reply(`❀ Se cambio al modo sin prefijos para el Socket correctamente\n> Ahora el bot responderá a comandos *sin prefijos*.`);
     }
-    const splitter = new GraphemeSplitter();
-    const graphemes = splitter.splitGraphemes(value);
+    const graphemes = splitGraphemes(value);
     const lista = [];
     for (const g of graphemes) {
       if (/^[a-zA-Z]+$/.test(g)) continue;
