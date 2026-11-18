@@ -11,8 +11,14 @@ import { sampleMenu } from '../../lib/menustyles.ts';
 
 const THEME_DESCRIPTIONS = {
   yuki: 'Estética delicada inspirada en YukiBot-MD (bordes suaves, ✿ y ꕤ)',
-  denji: 'Marco clásico limpio y directo',
-  chainsaw: 'Estilo Chainsaw Man con energía y separadores marcados',
+  denji: 'Marco clásico de DenjiBot, limpio y directo',
+  chainsaw: 'Estilo Chainsaw Man con sierras, cadenas y separadores marcados',
+  mystic: 'Inspirado en TheMystic-Bot-MD (marcos dobles, estrellas ✯ y <SECCIÓN/>)',
+  gata: 'Inspirado en GataBot-MD (etiquetas ❰❰ ❱❱, flechas ➺ y checks ✓)',
+  alya: 'Inspirado en AlyaBot-MD (cintas onduladas, ❖ y kaomojis suaves)',
+  michi: 'Inspirado en MichiBot (estilo botánico con gatitos 🐱, 🍃 y 🍀)',
+  loli: 'Inspirado en LoliBot-MD (encabezados compactos `<[ SECCIÓN ]>`)',
+  shadow: 'Inspirado en ShadowBot-MD (estética oscura con glifos 𖤐 y ⌬)',
   simple: 'Minimalista, sin adornos y ultra rápido de leer'
 };
 

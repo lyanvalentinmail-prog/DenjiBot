@@ -21,7 +21,17 @@ export const DEFAULT_BANNER = 'assets/banner.jpg';
 /** Formato del menú: lista interactiva, resumen de categorías o lista completa plegada. */
 export type MenuStyle = 'lista' | 'categorias' | 'texto';
 /** Estilo (diseño visual) del menú. */
-export type MenuTheme = 'yuki' | 'denji' | 'chainsaw' | 'simple';
+export type MenuTheme =
+    | 'yuki'
+    | 'denji'
+    | 'chainsaw'
+    | 'mystic'
+    | 'gata'
+    | 'alya'
+    | 'michi'
+    | 'loli'
+    | 'shadow'
+    | 'simple';
 export type LogMode = 'detallado' | 'compacto' | 'apagado';
 
 /** Momentos en los que el bot reacciona al mensaje de quien usa un comando. */
@@ -64,11 +74,28 @@ export const MENU_STYLE_HINTS: Record<MenuStyle, string> = {
     texto: 'Envía todos los comandos resumidos en una línea por comando, plegados con "Leer más".'
 };
 
-export const MENU_THEMES: MenuTheme[] = ['yuki', 'denji', 'chainsaw', 'simple'];
+export const MENU_THEMES: MenuTheme[] = [
+    'yuki',
+    'denji',
+    'chainsaw',
+    'mystic',
+    'gata',
+    'alya',
+    'michi',
+    'loli',
+    'shadow',
+    'simple'
+];
 export const MENU_THEME_NAMES: Record<MenuTheme, string> = {
     yuki: 'Yuki style',
     denji: 'Denji style',
     chainsaw: 'Chainsaw man style',
+    mystic: 'Mystic style',
+    gata: 'Gata style',
+    alya: 'Alya style',
+    michi: 'Michi style',
+    loli: 'Loli style',
+    shadow: 'Shadow style',
     simple: 'Simple style'
 };
 
@@ -100,7 +127,18 @@ export const defaultSettings: Settings = {
     banner: DEFAULT_BANNER,
     menuStyle: 'lista',
     menuTheme: 'yuki',
-    menuBanners: { yuki: '', denji: '', chainsaw: '', simple: '' },
+    menuBanners: {
+        yuki: '',
+        denji: '',
+        chainsaw: '',
+        mystic: '',
+        gata: '',
+        alya: '',
+        michi: '',
+        loli: '',
+        shadow: '',
+        simple: ''
+    },
     reactions: {
         enabled: true,
         events: { wait: '🕘', done: '⭐️', error: '', denied: '', unknown: '' },

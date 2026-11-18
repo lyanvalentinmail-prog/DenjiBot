@@ -12,15 +12,15 @@
 
 ### **`Funciones`**
 
-- **PRINCIPAL (`main`)** — Menú por categorías, información del bot, estado, ping, invitación y reportes.
-- **DESCARGAS (`downloads`)** — YouTube (`.play` / `.play2` / `.ytsearch`), TikTok, Instagram, Facebook, Twitter/X, Pinterest, Google Imágenes, APK (Aptoide), MediaFire y Google Drive.
-- **STICKERS (`stickers`)** — Stickers con formas y efectos (`.s`), BRAT estático y animado, citas `.qc`, `.emojimix`, Sticker.ly y gestión completa de paquetes propios (`.newpack`, `.addsticker`, `.getpack`).
-- **UTILIDADES (`utils`)** — ChatGPT (`.ia`), mejora de imagen `.hd`, traductor, `.toimg`, `.tourl`, lectura de mensajes de una vista (`.read`), `.getpic`, `.gitclone` y `.get`.
-- **ANIME (`anime`)** — `.waifu`, `.neko`, `.ppcouple` y 66 reacciones SFW interactivas en español e inglés.
+- **PRINCIPAL (`main`)** — Menú por categorías (10 estilos visuales), información del bot, estado, ping, invitación y reportes.
+- **DESCARGAS (`downloads`)** — YouTube (`.play` / `.play2` / `.ytsearch`), Spotify (`.spotify`), SoundCloud (`.soundcloud`), Threads (`.threads`), TikTok, Instagram, Facebook, Twitter/X, Pinterest, Google Imágenes, APK (Aptoide), MediaFire y Google Drive.
+- **STICKERS (`stickers`)** — Stickers con formas y efectos (`.s`), cambio de autor `.wm`/`.take`, memes `.smeme`, texto transparente/animado `.ttp`/`.attp`, BRAT estático y animado, citas `.qc`, `.emojimix`, Sticker.ly y gestión de paquetes propios (`.newpack`, `.addsticker`, `.getpack`).
+- **UTILIDADES (`utils`)** — ChatGPT (`.ia`), mejora y escalado de imágenes hasta 4× con **bigger.pics** (`.hd`, `.hd 4x`, `.hd anime`, `.hd deblur`, `.hd restore`, `.hd web`), quitar fondo (`.removebg`), `.tomp3`/`.toptt`, 12 efectos de audio (`.bass`, `.nightcore`, `.robot`…), identificador musical `.shazam`, letras `.lyrics`, `.wikipedia`, `.clima`, `.qrcode`, `.ssweb`, `.calc`, `.styletext`, `.acortar`, `.ocr`, `.voz`, `.readmore`, `.base64`/`.morse`/`.binario`, traductor, `.toimg`, `.tourl`, `.read`, `.getpic`, `.gitclone` y `.get`.
+- **ANIME (`anime`)** — `.waifu`, `.neko`, identificador de escenas `.whatanime` (trace.moe), `.ppcouple` y 66 reacciones SFW interactivas en español e inglés.
 - **GACHA (`gacha`)** — Sistema completo de colección de personajes: `.rw`, `.claim`, `.harem`, `.trade`, `.sell`, `.buychar`, `.vote`, `.robwaifu` y rankings.
-- **ECONOMÍA (`economy`)** — Balance, banco, trabajo, crimen, minería, pesca, caza, rituales, mazmorras, aventura, casino, ruleta, slots, tienda y duelos matemáticos.
+- **ECONOMÍA (`economy`)** — Balance, banco, trabajo, crimen, minería, pesca, caza, rituales, mazmorras, aventura, casino, ruleta, slots, tres en raya (`.ttt`), `.ahorcado`, tienda y duelos matemáticos.
 - **PERFIL (`profile`)** — Perfil, niveles y XP, AFK, matrimonios, divorcios, cumpleaños, género, descripción, hobbies y tabla de líderes.
-- **GRUPOS (`group`)** — Bienvenida y despedida personalizables, antilink, antistatus, alertas, advertencias (`.warn`), conteo de mensajes, `.kick`, `.promote`, `.demote`, `.tagall`, `.hidetag` y modo solo admins.
+- **GRUPOS (`group`)** — Bienvenida y despedida personalizables, antilink, antistatus, alertas, advertencias (`.warn`), silenciar usuarios (`.mute`/`.unmute`), borrar mensajes (`.del`), encuestas (`.encuesta`), `.admins`, conteo de mensajes, `.kick`, `.promote`, `.demote`, `.tagall`, `.hidetag` y modo solo admins.
 - **SUB-BOTS (`socket`)** — Vinculación de Sub-Bots por código (`.code`) o QR (`.qr`), listado de sockets y personalización de nombre, prefijo, moneda, banner, foto y canal.
 - **OWNER (`owner`)** — Configuración de estilo y formato del menú (`.setmenu`), eliminación completa o selectiva de datos (`.resetbot`), actualización en caliente (`.update`), reinicio y herramientas de propietario.
 
@@ -43,8 +43,14 @@ El menú está diseñado para no saturar el chat:
 
 - **Estilos visuales (`.setmenu <tema>`)**:
   - `yuki` *(por defecto)* — Estética delicada inspirada en YukiBot-MD.
-  - `denji` — Marco clásico limpio y directo.
-  - `chainsaw` — Estilo Chainsaw Man con separadores marcados.
+  - `denji` — Marco clásico de DenjiBot, limpio y directo.
+  - `chainsaw` — Estilo Chainsaw Man con sierras, cadenas y separadores marcados.
+  - `mystic` — Inspirado en TheMystic-Bot-MD (marcos dobles, `✯` y `<SECCIÓN />`).
+  - `gata` — Inspirado en GataBot-MD (`❰❰ ❱❱`, flechas `➺` y checks `✓`).
+  - `alya` — Inspirado en AlyaBot-MD (cintas onduladas, `❖` y kaomojis).
+  - `michi` — Inspirado en MichiBot (estilo botánico con gatitos `🐱`, `🍃` y `🍀`).
+  - `loli` — Inspirado en LoliBot-MD (etiquetas compactas `<[ SECCIÓN ]>`).
+  - `shadow` — Inspirado en ShadowBot-MD (estética oscura con glifos `𖤐` y `⌬`).
   - `simple` — Minimalista y sin adornos.
 - **Formatos de vista (`.setmenu <formato>`)**:
   - `lista` *(por defecto)* — Tarjeta corta con botón desplegable para abrir solo la categoría que buscas.
