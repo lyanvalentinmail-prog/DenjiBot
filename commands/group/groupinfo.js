@@ -1,4 +1,3 @@
-import ws from 'ws';
 import fs from 'fs';
 import db from '#db';
 

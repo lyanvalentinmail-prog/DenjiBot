@@ -1,4 +1,3 @@
-import moment from 'moment-timezone';
 import db from '#db';
 
 const growth = Math.pow(Math.PI / Math.E, 1.618) * Math.E * 0.75;

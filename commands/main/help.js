@@ -1,4 +1,3 @@
-import moment from 'moment-timezone';
 import { getDevice, prepareWAMessageMedia } from '@whiskeysockets/baileys';
 import config from '#config';
 import db from '#db';
@@ -309,8 +308,10 @@ function buildCatalog(usedPrefix) {
       .filter(Boolean);
     if (!aliases.length) continue;
 
+    const normKey = pluginKey.replace(/\\/g, '/').replace(/\.[jt]s$/, '');
+
     // 1) 66 reacciones SFW agrupadas por estado de ánimo (sin saturar la pantalla).
-    if (pluginKey.endsWith('anime/shares.js')) {
+    if (normKey.endsWith('anime/shares')) {
       bucket.groups = ANIME_REACTION_GROUPS;
       bucket.groupsNote = `También en español (${usedPrefix}besar, ${usedPrefix}abrazar, ${usedPrefix}feliz…) mencionando a @usuario`;
       bucket.count += ANIME_REACTION_GROUPS.reduce((sum, g) => sum + g.items.length, 0);
@@ -318,7 +319,7 @@ function buildCatalog(usedPrefix) {
     }
 
     // 2) waifu y neko separados con claridad.
-    if (pluginKey.endsWith('anime/waifu.js')) {
+    if (normKey.endsWith('anime/waifu')) {
       bucket.commands.push(
         { cmd: ['waifu'], usage: '', desc: 'Imagen aleatoria de waifu' },
         { cmd: ['neko'], usage: '', desc: 'Imagen aleatoria de neko' }
@@ -328,14 +329,14 @@ function buildCatalog(usedPrefix) {
     }
 
     // 3) Interruptores de grupo sin duplicar alias en español e inglés.
-    if (pluginKey.endsWith('group/options.js')) {
+    if (normKey.endsWith('group/options')) {
       bucket.commands.push(...GROUP_TOGGLE_ITEMS);
       bucket.count += GROUP_TOGGLE_ITEMS.length;
       continue;
     }
 
     // 4) Sub-bots: code y qr claros.
-    if (pluginKey.endsWith('socket/subs.js')) {
+    if (normKey.endsWith('socket/subs')) {
       bucket.commands.push(
         { cmd: ['code'], usage: '[número]', desc: 'Vincular Sub-Bot con código' },
         { cmd: ['qr'], usage: '', desc: 'Vincular Sub-Bot con código QR' }
@@ -488,7 +489,9 @@ export default {
       const prefix = usedPrefix || config.prefix || '.';
       const uptime = formatUptime(sock.uptime ? (Date.now() - sock.uptime) / 1000 : process.uptime());
       const device = msg.key?.id ? getDevice(msg.key.id) : 'unknown';
-      const nowTz = moment().tz('America/Bogota');
+      const now = new Date();
+      const dateStr = now.toLocaleDateString('es-ES', { day: '2-digit', month: 'short' }).replace('.', '');
+      const timeStr = now.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: true });
 
       const allCategories = buildCatalog(prefix);
       const visibleCategories = isOwner ? allCategories : allCategories.filter(c => c.id !== 'owner');
@@ -506,8 +509,8 @@ export default {
         link,
         botType,
         device,
-        date: nowTz.format('DD MMM'),
-        time: nowTz.format('hh:mm A'),
+        date: dateStr,
+        time: timeStr,
         users: typeof db.countUsers === 'function' ? db.countUsers() : (db.getUser()?.length || 0),
         uptime
       };

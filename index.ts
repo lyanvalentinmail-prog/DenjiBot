@@ -14,12 +14,11 @@ import path from 'node:path';
 import readline from 'node:readline';
 import qrcode from 'qrcode';
 import { EventEmitter } from 'node:events';
-import NodeCache from 'node-cache';
 import Agent from 'node:https';
 import config from '#config';
 import db from '#db';
 import { smsg, getCachedMeta, deleteCachedMeta, patchGroupMetadata } from '#simple';
-import { createSignalCache } from '#core/signal-cache';
+import { MemoryCache, createSignalCache } from '#core/signal-cache';
 import { beginMessage, instrumentSocket } from '#core/latency';
 import cmdsLoader from '#loader';
 import handler from '#handler';
@@ -240,7 +239,7 @@ export async function startBot(): Promise<void> {
     broadcast('bot_status', { status: 'connecting' });
 
     const logger = P({ level: 'silent' }) as any;
-    const msgRetryCounterCache = new NodeCache({ stdTTL: 3600, checkperiod: 600, useClones: false });
+    const msgRetryCounterCache = new MemoryCache({ stdTTL: 3600, checkperiod: 600, useClones: false });
 
     const sock: any = makeWASocket({
         logger,

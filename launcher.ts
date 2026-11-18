@@ -249,6 +249,8 @@ async function runPanel(): Promise<void> {
             return openConsole();
         }
 
+        const installed = await ensureDependencies();
+        if (!installed) return;
         const options = await askLinkOptions();
         if (!options) return;
         startBot(options);
@@ -795,6 +797,45 @@ async function runPanel(): Promise<void> {
         });
     }
 
+    function findMissingDependencies(): string[] {
+        try {
+            const pkg = JSON.parse(fs.readFileSync(path.join(ROOT, 'package.json'), 'utf8'));
+            const deps = Object.keys(pkg?.dependencies || {});
+            return deps.filter(name => !fs.existsSync(path.join(ROOT, 'node_modules', ...name.split('/'), 'package.json')));
+        } catch {
+            return [];
+        }
+    }
+
+    async function installDependencies(section: string): Promise<boolean> {
+        const sharedStorage = /^\/(sdcard|storage)\//.test(ROOT);
+        const args = ['install', '--no-audit', '--no-fund', ...(sharedStorage ? ['--no-bin-links'] : [])];
+        return taskScreen(section, async log => {
+            log(c.dim(`$ npm ${args.join(' ')}`));
+            const npm = await run('npm', args, log, 900_000);
+            log('');
+            log(npm.code === 0 ? c.green('✔ Dependencias instaladas.') : c.red('✖ npm install terminó con errores.'));
+            return npm.code === 0;
+        });
+    }
+
+    async function ensureDependencies(): Promise<boolean> {
+        const missing = findMissingDependencies();
+        if (!missing.length) return true;
+        const shown = missing.slice(0, 5).join(', ') + (missing.length > 5 ? ` (+${missing.length - 5} más)` : '');
+        const install = await confirm(
+            () => [
+                ...title('Dependencias faltantes'),
+                ...para(`Faltan paquetes en node_modules: ${shown}.`, c.yellow)
+            ],
+            '¿Instalar dependencias ahora? (npm install)',
+            'Sí, instalar',
+            'Cancelar'
+        );
+        if (!install) return false;
+        return installDependencies('Dependencias › npm install');
+    }
+
     async function updateScreen(): Promise<void> {
         if (!fs.existsSync(path.join(ROOT, '.git'))) {
             return message(() => [
@@ -835,22 +876,23 @@ async function runPanel(): Promise<void> {
         if (!result?.updated) return;
         const changed = result.changed;
 
-        if (changed.includes('package.json')) {
+        const missingAfterPull = findMissingDependencies();
+        if (changed.includes('package.json') || missingAfterPull.length > 0) {
             const install = await confirm(
-                () => [...title('Actualizar bot'), ...para('La actualización cambió las dependencias (package.json).')],
+                () => [
+                    ...title('Actualizar bot'),
+                    ...para(
+                        missingAfterPull.length > 0
+                            ? `Faltan dependencias nuevas (${missingAfterPull.slice(0, 5).join(', ')}).`
+                            : 'La actualización cambió las dependencias (package.json).'
+                    )
+                ],
                 '¿Instalar dependencias ahora? (npm install)',
                 'Sí, instalar',
                 'Ahora no'
             );
             if (install) {
-                const sharedStorage = /^\/(sdcard|storage)\//.test(ROOT);
-                const args = ['install', '--no-audit', '--no-fund', ...(sharedStorage ? ['--no-bin-links'] : [])];
-                await taskScreen('Actualizar bot › npm install', async log => {
-                    log(c.dim(`$ npm ${args.join(' ')}`));
-                    const npm = await run('npm', args, log, 900_000);
-                    log('');
-                    log(npm.code === 0 ? c.green('✔ Dependencias instaladas.') : c.red('✖ npm install terminó con errores.'));
-                });
+                await installDependencies('Actualizar bot › npm install');
             }
         }
 

@@ -1,6 +1,5 @@
 import { normalizeJid, resolveParticipantJid, resolveJidSync, deleteCachedMeta, getCachedMeta, setCachedMeta } from '#serialize';
 import chalk from 'chalk';
-import moment from 'moment-timezone';
 import db from '#db';
 
 function getGroupAdmins(participants) {
@@ -36,7 +35,7 @@ export default async (sock, msg) => {
       const now = new Date();
       const colombianTime = new Date(now.toLocaleString('en-US', { timeZone: 'America/Bogota' }));
       const tiempo = colombianTime.toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' }).replace(/,/g, '');
-      const tiempo2 = moment.tz('America/Bogota').format('hh:mm A');
+      const tiempo2 = now.toLocaleTimeString('en-US', { timeZone: 'America/Bogota', hour: '2-digit', minute: '2-digit', hour12: true });
       const memberCount = metadata?.participants?.length || 0;
       const isSelf = (settings.self ?? false) || (chat.isMute ?? false);
       if (isSelf) return;

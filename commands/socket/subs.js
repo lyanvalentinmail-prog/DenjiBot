@@ -1,5 +1,4 @@
 import makeWASocket, { Browsers, makeCacheableSignalKeyStore, fetchLatestBaileysVersion, DisconnectReason, jidDecode, useMultiFileAuthState } from '@whiskeysockets/baileys';
-import NodeCache from 'node-cache';
 import main from '#main';
 import events from '../events.js';
 import { handleGroupAlerts } from '#alertas';
@@ -10,7 +9,7 @@ import path from 'path';
 import chalk from 'chalk';
 import { smsg, patchGroupMetadata, getCachedMeta, deleteCachedMeta } from '#serialize';
 import db from '#db';
-import { createSignalCache } from '#core/signal-cache';
+import { MemoryCache, createSignalCache } from '#core/signal-cache';
 import { beginMessage, instrumentSocket } from '#core/latency';
 
 if (!global.conns) global.conns = [];
@@ -72,7 +71,7 @@ export async function startSubBot(msg, client, caption = '', isCode = false, pho
   const version = await getVersion();
   let saveCredsTimer = null;
   const saveCreds = () => { clearTimeout(saveCredsTimer); saveCredsTimer = setTimeout(saveCredsDB, 2000); };
-  const msgRetryCounterCache = new NodeCache({ stdTTL: 3600, checkperiod: 600, useClones: false });
+  const msgRetryCounterCache = new MemoryCache({ stdTTL: 3600, checkperiod: 600, useClones: false });
   const msgStore = new Map();
   const msgLimit = 500;
   console.info = () => {};
