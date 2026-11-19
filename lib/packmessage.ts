@@ -231,8 +231,9 @@ export async function sendStickerPack(sock: any, jid: string, input: PackInput, 
 
     await sock.relayMessage(jid, message.message!, {
         messageId: message.key.id!,
-        // Baileys no reconoce este tipo de mensaje y lo marcaría como texto.
-        additionalAttributes: { type: 'media' }
+        // Baileys no reconoce stickerPackMessage en getMediaType(); forzamos
+        // el stanza type y mediatype que WhatsApp necesita para renderizar el pack.
+        additionalAttributes: { type: 'media', mediatype: 'sticker_pack' }
     });
 
     return stickers.length;
