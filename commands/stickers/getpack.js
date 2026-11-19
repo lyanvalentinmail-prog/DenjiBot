@@ -1,10 +1,8 @@
 import webp from 'node-webpmux';
 import db from '#db';
+import { isAnimatedWebp } from '#sticker';
 
-const isAnimWebp = buf =>
-  Buffer.isBuffer(buf) &&
-  buf.length > 32 &&
-  (buf.indexOf(Buffer.from('ANIM')) !== -1 || buf.indexOf(Buffer.from('ANMF')) !== -1);
+const isAnimWebp = isAnimatedWebp;
 
 export default {
   command: ['getpack', 'pack'],
@@ -99,17 +97,36 @@ export default {
         })
       );
 
-      await sock.sendStickerPackMessage(
-        msg.chat,
-        {
-          name: pack.name,
-          publisher: `${pack.author || name} (${name})`,
-          description: pack.desc || '',
-          cover,
-          stickers: stickerResults
-        },
-        msg
-      );
+      try {
+        await sock.sendStickerPackMessage(
+          msg.chat,
+          {
+            name: pack.name,
+            publisher: `${pack.author || name} (${name})`,
+            description: pack.desc || '',
+            cover,
+            stickers: stickerResults
+          },
+          msg
+        );
+      } catch (packError) {
+        console.error('[getpack] No se pudo enviar el paquete nativo:', packError);
+        // Respaldo: enviar los stickers sueltos si el paquete nativo falla.
+        let sent = 0;
+        for (const item of stickerResults.slice(0, 10)) {
+          try {
+            await sock.sendImageAsSticker(msg.chat, item.sticker, msg, {
+              packname: stickerPackname,
+              author: stickerAuthor
+            });
+            sent += 1;
+          } catch {}
+        }
+        if (sent > 0) {
+          return msg.reply(`《✧》 No se pudo enviar el paquete completo, así que te envié ${sent} stickers sueltos del pack *${pack.name}*.`);
+        }
+        throw packError;
+      }
     } catch (e) {
       msg.reply(`> Error al ejecutar *${usedPrefix + command}*.\n> [Error: *${e.message}*]`);
     }

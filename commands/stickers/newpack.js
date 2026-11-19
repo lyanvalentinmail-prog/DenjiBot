@@ -7,7 +7,7 @@ export default {
     try {
       const settings = db.getSettings(sock.user.id.split('@')[0].split(':')[0] + '@s.whatsapp.net') || {}
       const userId = db.getUser(msg.sender)
-      const dev = userId.name || msg.pushName || 'Desconocido'
+      const dev = userId?.name || msg.pushName || 'Desconocido'
       const name = args.join(' ').trim()
       if (!name || name.length < 4 || name.length > 64) {
         return msg.reply('《✧》El nombre del paquete de stickers debe tener entre 4 y 64 caracteres.')

@@ -23,6 +23,7 @@
     "#simple": "./lib/simple.ts",
     "#serialize": "./lib/simple.ts",
     "#sticker": "./lib/stickers.ts",
+    "#stickerly": "./lib/stickerly.ts",
     "#core/exif": "./lib/stickers.ts",
     "#core/latency": "./lib/latency.ts",
     "#core/signal-cache": "./lib/signal-cache.ts",

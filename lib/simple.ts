@@ -16,10 +16,12 @@ import {
     jidDecode,
     jidNormalizedUser
 } from '@whiskeysockets/baileys';
-import exif from './stickers.ts';
+import exif, { isAnimatedWebp } from './stickers.ts';
 import db from '#db';
 import { getSessionDir } from './settings.ts';
 import { sendStickerPack } from './packmessage.ts';
+import { makeTrayWebp, makeThumbJpeg } from './stickerthumb.ts';
+import { STICKERLY_UA } from './stickerly.ts';
 
 const graphemeSegmenter = new Intl.Segmenter(undefined, { granularity: 'grapheme' });
 export const splitGraphemes = (input: string): string[] =>
@@ -420,6 +422,7 @@ export function patchGroupMetadata(sock: any): void {
 }
 
 export async function getBuffer(url: string, options: any = {}): Promise<Buffer> {
+    const { headers: optionHeaders, ...rest } = options || {};
     const res = await axios({
         method: 'get',
         url,
@@ -427,12 +430,12 @@ export async function getBuffer(url: string, options: any = {}): Promise<Buffer>
             'User-Agent': DEFAULT_UA,
             Accept: '*/*',
             DNT: 1,
-            ...(options.headers || {})
+            ...(optionHeaders || {})
         },
         responseType: 'arraybuffer',
         timeout: 30_000,
         maxRedirects: 5,
-        ...options
+        ...rest
     });
     return Buffer.from(res.data);
 }
@@ -590,22 +593,105 @@ export function unwrapContent(message: any): any {
     return raw;
 }
 
-async function renderThumb(webpBuf: Buffer, size: number, format: 'png' | 'jpg'): Promise<Buffer> {
+async function renderThumbViaFfmpeg(webpBuf: Buffer, size: number, format: 'webp' | 'jpg'): Promise<Buffer> {
     const tag = crypto.randomBytes(6).toString('hex');
     const inFile = path.join(os.tmpdir(), `denji-pk-in-${tag}.webp`);
     const outFile = path.join(os.tmpdir(), `denji-pk-out-${tag}.${format}`);
     await fs.promises.writeFile(inFile, webpBuf);
     try {
         const vf =
-            format === 'png'
+            format === 'webp'
                 ? `scale=${size}:${size}:force_original_aspect_ratio=decrease,format=rgba,pad=${size}:${size}:(ow-iw)/2:(oh-ih)/2:color=#00000000`
                 : `scale=${size}:${size}:force_original_aspect_ratio=decrease,pad=${size}:${size}:(ow-iw)/2:(oh-ih)/2:color=white`;
-        await runFfmpeg(['-y', '-i', inFile, '-frames:v', '1', '-vf', vf, outFile]);
+        const args = ['-y', '-i', inFile, '-frames:v', '1', '-vf', vf];
+        if (format === 'jpg') args.push('-q:v', '3');
+        else args.push('-c:v', 'libwebp', '-lossless', '1');
+        args.push(outFile);
+        await runFfmpeg(args);
         return await fs.promises.readFile(outFile);
     } finally {
         await fs.promises.unlink(inFile).catch(() => {});
         await fs.promises.unlink(outFile).catch(() => {});
     }
+}
+
+/**
+ * Genera la bandeja (WebP 96x96) y la miniatura (JPEG 252x252) del paquete.
+ * Primero intenta el decodificador interno (sin ffmpeg); si falla, cae a ffmpeg.
+ */
+async function buildPackImages(coverSrc: Buffer): Promise<{ trayWebp: Buffer; thumbnailJpeg: Buffer }> {
+    try {
+        const [trayWebp, thumbnailJpeg] = await Promise.all([
+            makeTrayWebp(coverSrc, 96),
+            makeThumbJpeg(coverSrc, 252, 80)
+        ]);
+        return { trayWebp, thumbnailJpeg };
+    } catch (err: any) {
+        try {
+            const [trayWebp, thumbnailJpeg] = await Promise.all([
+                renderThumbViaFfmpeg(coverSrc, 96, 'webp'),
+                renderThumbViaFfmpeg(coverSrc, 252, 'jpg')
+            ]);
+            return { trayWebp, thumbnailJpeg };
+        } catch {
+            throw new Error(`No se pudo generar la portada/miniatura del paquete: ${err?.message || err}`);
+        }
+    }
+}
+
+const MAX_STICKER_BYTES = 1024 * 1024; // WhatsApp descarta stickers gigantes dentro de un paquete
+
+async function resolvePackSticker(item: {
+    sticker?: Buffer;
+    url?: string;
+    isAnimated?: boolean;
+    emojis?: string[];
+}): Promise<{ webp: Buffer; animated: boolean; emojis: string[] } | null> {
+    let buf: Buffer | null = null;
+    if (Buffer.isBuffer(item.sticker)) {
+        buf = item.sticker;
+    } else if (item.url) {
+        const url = String(item.url);
+        const isStickerlyCdn = /sticker\.ly/i.test(url);
+        const raw = await getBuffer(url, {
+            timeout: 20_000,
+            headers: isStickerlyCdn ? { 'User-Agent': STICKERLY_UA } : undefined
+        });
+        const ft = await fileTypeFromBuffer(raw).catch(() => null);
+        if (ft?.mime === 'image/webp') {
+            buf = raw;
+        } else if (ft?.mime && /gif|video/i.test(ft.mime)) {
+            buf = await videoToWebp(raw);
+        } else {
+            buf = await imageToWebp(raw);
+        }
+    }
+    if (!buf || buf.length === 0 || buf.length > MAX_STICKER_BYTES) return null;
+    return {
+        webp: buf,
+        animated: Boolean(item.isAnimated) || isAnimatedWebp(buf),
+        emojis: item.emojis?.length ? item.emojis.map(String) : ['🎭']
+    };
+}
+
+/** Descarga/prepara los stickers con concurrencia acotada, manteniendo el orden. */
+async function resolvePackStickers(
+    items: { sticker?: Buffer; url?: string; isAnimated?: boolean; emojis?: string[] }[],
+    concurrency = 6
+): Promise<{ webp: Buffer; animated: boolean; emojis: string[] }[]> {
+    const slice = items.slice(0, 50);
+    const out: ({ webp: Buffer; animated: boolean; emojis: string[] } | null)[] = new Array(slice.length);
+    let cursor = 0;
+    const workers = Array.from({ length: Math.min(concurrency, slice.length) }, async () => {
+        for (;;) {
+            const i = cursor;
+            cursor += 1;
+            if (i >= slice.length) return;
+            out[i] = await resolvePackSticker(slice[i]).catch(() => null);
+        }
+    });
+    await Promise.all(workers);
+    return out.filter(Boolean) as { webp: Buffer; animated: boolean; emojis: string[] }[];
 }
 
 export async function sendNativeStickerPack(
@@ -620,32 +706,10 @@ export async function sendNativeStickerPack(
     },
     quoted?: any
 ): Promise<any> {
-    const resolved: { webp: Buffer; animated: boolean; emojis: string[] }[] = [];
-    for (const item of packSpec.stickers.slice(0, 50)) {
-        try {
-            let buf: Buffer | null = null;
-            if (Buffer.isBuffer(item.sticker)) {
-                buf = item.sticker;
-            } else if (item.url) {
-                const raw = await getBuffer(item.url, { timeout: 15_000 });
-                const ft = await fileTypeFromBuffer(raw);
-                buf = ft?.mime === 'image/webp' ? raw : await imageToWebp(raw);
-            }
-            if (buf && buf.length > 0) {
-                resolved.push({
-                    webp: buf,
-                    animated: Boolean(item.isAnimated),
-                    emojis: item.emojis?.length ? item.emojis : ['🎭']
-                });
-            }
-        } catch {}
-    }
+    const resolved = await resolvePackStickers(packSpec.stickers);
     if (!resolved.length) throw new Error('No se pudieron preparar los stickers del paquete.');
     const coverSrc = Buffer.isBuffer(packSpec.cover) ? packSpec.cover : resolved[0].webp;
-    const [trayPng, thumbnailJpeg] = await Promise.all([
-        renderThumb(coverSrc, 96, 'png'),
-        renderThumb(coverSrc, 252, 'jpg')
-    ]);
+    const { trayWebp, thumbnailJpeg } = await buildPackImages(coverSrc);
     return sendStickerPack(
         sock,
         jid,
@@ -654,7 +718,7 @@ export async function sendNativeStickerPack(
             publisher: packSpec.publisher || 'Denji bot',
             description: packSpec.description || '',
             stickers: resolved,
-            trayPng,
+            trayWebp,
             thumbnailJpeg
         },
         quoted

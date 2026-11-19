@@ -16,8 +16,9 @@ import {
  * Envío de un paquete de stickers nativo de WhatsApp (stickerPackMessage).
  *
  * Baileys todavía no lo incluye, así que aquí se hace a mano lo mismo que hace
- * WhatsApp: un ZIP sin comprimir con los stickers y el icono, cifrado como
- * cualquier otro archivo multimedia, más una miniatura cifrada con la misma clave.
+ * WhatsApp: un ZIP sin comprimir con los stickers y el icono de bandeja (WebP),
+ * cifrado como cualquier otro archivo multimedia, más una miniatura JPEG
+ * cifrada con la misma clave del paquete.
  */
 
 export type PackSticker = {
@@ -32,8 +33,8 @@ export type PackInput = {
     publisher: string;
     description?: string;
     stickers: PackSticker[];
-    /** Icono del paquete: PNG de 96x96. */
-    trayPng: Buffer;
+    /** Icono del paquete: WebP de 96x96. */
+    trayWebp: Buffer;
     /** Miniatura del mensaje: JPEG de 252x252. */
     thumbnailJpeg: Buffer;
 };
@@ -55,9 +56,9 @@ function registerMediaTypes(): void {
 
 const sha256 = (data: Buffer): Buffer => crypto.createHash('sha256').update(data).digest();
 
-/** Nombre de un sticker dentro del ZIP: su SHA-256 en base64, sin barras. */
+/** Nombre de un sticker dentro del ZIP: su SHA-256 en base64url (sin +, / ni =). */
 export function stickerFileName(webp: Buffer): string {
-    return sha256(webp).toString('base64').replace(/\//g, '-') + '.webp';
+    return sha256(webp).toString('base64url') + '.webp';
 }
 
 /** ZIP sin compresión (método "store"): es lo que espera WhatsApp y no necesita dependencias. */
@@ -169,15 +170,15 @@ export function buildPackArchive(input: PackInput, packId: string) {
         stickers.push({
             fileName,
             isAnimated: !!sticker.animated,
-            emojis: sticker.emojis?.length ? sticker.emojis : [''],
+            emojis: sticker.emojis?.length ? sticker.emojis : ['🎭'],
             accessibilityLabel: '',
             isLottie: false,
             mimetype: 'image/webp'
         });
     }
 
-    const trayIconFileName = `${packId}.png`;
-    files.push({ name: trayIconFileName, data: input.trayPng });
+    const trayIconFileName = `${packId}.webp`;
+    files.push({ name: trayIconFileName, data: input.trayWebp });
 
     return { zip: zipStore(files), stickers, trayIconFileName };
 }
@@ -219,7 +220,11 @@ export async function sendStickerPack(sock: any, jid: string, input: PackInput, 
         stickerPackOrigin: proto.Message.StickerPackMessage.StickerPackOrigin.USER_CREATED
     };
 
-    const message = generateWAMessageFromContent(jid, { stickerPackMessage }, {
+    const message = generateWAMessageFromContent(jid, {
+        // La app oficial siempre incluye un messageSecret: habilita el token de reporte.
+        messageContextInfo: { messageSecret: crypto.randomBytes(32) },
+        stickerPackMessage
+    }, {
         userJid: sock.user?.id ? jidNormalizedUser(sock.user.id) : undefined,
         quoted
     } as any);
