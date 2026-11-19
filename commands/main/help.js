@@ -150,6 +150,7 @@ const USAGE_HINTS = {
   qc: '<texto>',
   emojimix: '<😀+😎>',
   stickerpack: '<tema|url>',
+  ssearch: '<búsqueda>',
   newpack: '<nombre>',
   addsticker: '<paquete>',
   delsticker: '<paquete>',

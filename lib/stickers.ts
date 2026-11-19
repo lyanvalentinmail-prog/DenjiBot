@@ -14,6 +14,28 @@ function tmpFile(ext: string): string {
     return path.join(dir, `denji-${randomBytes(6).toString('hex')}.${ext}`);
 }
 
+
+/**
+ * Detecta si un WebP es animado recorriendo sus chunks RIFF.
+ * Más fiable que buscar la subcadena 'ANIM'/'ANMF' dentro del binario.
+ */
+export function isAnimatedWebp(buf: Buffer): boolean {
+    if (!isWebpBuffer(buf)) return false;
+    let offset = 12;
+    while (offset + 8 <= buf.length) {
+        const tag = buf.toString('ascii', offset, offset + 4);
+        const size = buf.readUInt32LE(offset + 4);
+        if (tag === 'VP8X' && offset + 8 < buf.length) {
+            const flags = buf[offset + 8];
+            if (flags & 0x02) return true;
+        } else if (tag === 'ANIM' || tag === 'ANMF') {
+            return true;
+        }
+        offset += 8 + size + (size % 2);
+    }
+    return false;
+}
+
 export function isWebpBuffer(buf: Buffer): boolean {
     return (
         Buffer.isBuffer(buf) &&
@@ -314,6 +336,7 @@ export async function addExif(
 
 export default {
     isWebpBuffer,
+    isAnimatedWebp,
     isMp4Buffer,
     isGifBuffer,
     runFfmpeg,
