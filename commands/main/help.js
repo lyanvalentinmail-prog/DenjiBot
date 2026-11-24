@@ -141,6 +141,7 @@ const USAGE_HINTS = {
   gdrive: '<enlace>',
   // stickers
   sticker: '[img|video]',
+  s2: '[Escalado|Normal|BorrarN]',
   wm: '[pack | autor]',
   smeme: '<arriba | abajo>',
   ttp: '<texto>',

@@ -20,8 +20,11 @@ import exif, { isAnimatedWebp } from './stickers.ts';
 import db from '#db';
 import { getSessionDir } from './settings.ts';
 import { sendStickerPack } from './packmessage.ts';
+import { registerAudioStickerProto, sendAudioSticker } from './audiosticker.ts';
 import { makeTrayWebp, makeThumbJpeg } from './stickerthumb.ts';
 import { STICKERLY_UA } from './stickerly.ts';
+
+registerAudioStickerProto();
 
 const graphemeSegmenter = new Intl.Segmenter(undefined, { granularity: 'grapheme' });
 export const splitGraphemes = (input: string): string[] =>
@@ -582,6 +585,8 @@ export function unwrapContent(message: any): any {
         if (raw?.viewOnceMessageV2?.message) { raw = raw.viewOnceMessageV2.message; continue; }
         if (raw?.viewOnceMessageV2Extension?.message) { raw = raw.viewOnceMessageV2Extension.message; continue; }
         if (raw?.documentWithCaptionMessage?.message) { raw = raw.documentWithCaptionMessage.message; continue; }
+        if (raw?.audioStickerMessage?.message) { raw = raw.audioStickerMessage.message; continue; }
+        if (raw?.lottieStickerMessage?.message) { raw = raw.lottieStickerMessage.message; continue; }
         if (raw?.editedMessage?.message?.protocolMessage?.editedMessage) {
             raw = raw.editedMessage.message.protocolMessage.editedMessage;
             continue;
@@ -940,6 +945,11 @@ export function attachSockHelpers(sock: any): void {
     if (!sock.sendStickerPackMessage) {
         sock.sendStickerPackMessage = (jid: string, spec: any, quoted?: any) =>
             sendNativeStickerPack(sock, jid, spec, quoted);
+    }
+
+    if (!sock.sendAudioSticker) {
+        sock.sendAudioSticker = (jid: string, spec: any, quoted?: any) =>
+            sendAudioSticker(sock, jid, spec, quoted);
     }
 
     if (!sock.reply) {
