@@ -589,7 +589,7 @@ function buildDynamicCornerKeyExpr(size = 512): string {
  */
 export async function videoToAudioStickerWebp(
     media: Buffer,
-    mode: AudioStickerMode = 'escalado',
+    mode: AudioStickerMode = 'normal',
     maxSeconds = MAX_AUDIO_SECONDS
 ): Promise<Buffer> {
     const ext = isGifBuffer(media) ? 'gif' : isWebpBuffer(media) ? 'webp' : 'mp4';
