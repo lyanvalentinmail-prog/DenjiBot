@@ -191,3 +191,93 @@ export async function collectStats(root: string = ROOT): Promise<Stats> {
 
     return stats;
 }
+
+export interface KnownChatItem {
+    jid: string;
+    name: string;
+    isGroup: boolean;
+    lastSeen: number;
+}
+
+/**
+ * Devuelve los grupos y chats privados registrados en `database.db` (solo lectura)
+ * para elegirlos cómodamente desde el panel de `npm start`.
+ */
+export async function listKnownChats(root: string = ROOT): Promise<KnownChatItem[]> {
+    const dbDir = root === ROOT ? DATABASE_DIR : path.join(root, 'database');
+    const dbPath = path.join(dbDir, 'database.db');
+    if (!fs.existsSync(dbPath)) return [];
+
+    const { DatabaseSync } = await import('node:sqlite');
+    const db = new DatabaseSync(dbPath, { readOnly: true });
+
+    try {
+        const items = new Map<string, KnownChatItem>();
+        const chatCols = new Set(
+            (db.prepare('PRAGMA table_info(chats)').all() as any[]).map(c => String(c.name))
+        );
+        const hasChatName = chatCols.has('name');
+
+        try {
+            const chatRows = db.prepare(
+                hasChatName ? 'SELECT id, name FROM chats' : 'SELECT id FROM chats'
+            ).all() as any[];
+            for (const r of chatRows) {
+                const jid = String(r.id || '').trim();
+                if (!jid.endsWith('@g.us') && !jid.endsWith('@s.whatsapp.net')) continue;
+                items.set(jid, {
+                    jid,
+                    name: hasChatName ? String(r.name || '').trim() : '',
+                    isGroup: jid.endsWith('@g.us'),
+                    lastSeen: 0
+                });
+            }
+        } catch {}
+
+        try {
+            const activityRows = db.prepare(
+                'SELECT chat_id, MAX(lastSeen) AS lastSeen FROM chat_users GROUP BY chat_id'
+            ).all() as any[];
+            for (const r of activityRows) {
+                const jid = String(r.chat_id || '').trim();
+                if (!jid.endsWith('@g.us') && !jid.endsWith('@s.whatsapp.net')) continue;
+                const existing = items.get(jid) || {
+                    jid,
+                    name: '',
+                    isGroup: jid.endsWith('@g.us'),
+                    lastSeen: 0
+                };
+                existing.lastSeen = Math.max(existing.lastSeen, Number(r.lastSeen) || 0);
+                items.set(jid, existing);
+            }
+        } catch {}
+
+        try {
+            const userRows = db.prepare('SELECT id, name FROM users').all() as any[];
+            for (const r of userRows) {
+                const jid = String(r.id || '').trim();
+                if (!jid.endsWith('@s.whatsapp.net')) continue;
+                const uName = String(r.name || '').trim();
+                const existing = items.get(jid);
+                if (existing && !existing.name && uName) {
+                    existing.name = uName;
+                } else if (!existing && uName) {
+                    items.set(jid, { jid, name: uName, isGroup: false, lastSeen: 0 });
+                }
+            }
+        } catch {}
+
+        return Array.from(items.values())
+            .sort((a, b) => {
+                if (a.isGroup !== b.isGroup) return a.isGroup ? -1 : 1;
+                if (b.lastSeen !== a.lastSeen) return b.lastSeen - a.lastSeen;
+                return (a.name || a.jid).localeCompare(b.name || b.jid);
+            })
+            .slice(0, 60);
+    } catch {
+        return [];
+    } finally {
+        try { db.close(); } catch {}
+    }
+}
+

@@ -172,6 +172,9 @@ export async function handler(sock: any, msg: any): Promise<any> {
             groupMetadata = await sock.groupMetadata(msg.chat).catch(() => null);
             if (groupMetadata) setCachedMeta(msg.chat, groupMetadata);
         }
+        if (groupMetadata?.subject && chat?.name !== groupMetadata.subject) {
+            try { db.setChat(msg.chat, 'name', String(groupMetadata.subject)); } catch {}
+        }
     }
     const participants: any[] = groupMetadata?.participants || [];
     const adminSet = getAdmins(groupMetadata, participants);
