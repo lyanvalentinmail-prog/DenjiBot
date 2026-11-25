@@ -211,7 +211,35 @@ export function waveformFromPcm(pcm: Buffer, bars = 64): Buffer {
     return out;
 }
 
-function spawnFfmpeg(
+function swapFpsSyncArgs(args: string[], errText: string): string[] | null {
+    if (/Unrecognized option 'fps_mode'/i.test(errText) && args.includes('-fps_mode')) {
+        const next: string[] = [];
+        for (let i = 0; i < args.length; i++) {
+            if (args[i] === '-fps_mode' && i + 1 < args.length) {
+                const v = args[++i];
+                next.push('-vsync', v === 'passthrough' ? '0' : v);
+            } else {
+                next.push(args[i]);
+            }
+        }
+        return next;
+    }
+    if (/Unrecognized option 'vsync'/i.test(errText) && args.includes('-vsync')) {
+        const next: string[] = [];
+        for (let i = 0; i < args.length; i++) {
+            if (args[i] === '-vsync' && i + 1 < args.length) {
+                const v = args[++i];
+                next.push('-fps_mode', v === '0' ? 'passthrough' : v);
+            } else {
+                next.push(args[i]);
+            }
+        }
+        return next;
+    }
+    return null;
+}
+
+function spawnFfmpegOnce(
     args: string[],
     opts: { timeoutMs?: number; captureStdout?: boolean; maxStdoutBytes?: number; loglevel?: string } = {}
 ): Promise<{ stdout: Buffer; stderr: string }> {
@@ -275,6 +303,19 @@ function spawnFfmpeg(
             else reject(new Error(stderr.trim() || `ffmpeg finalizó con código ${code}`));
         });
     });
+}
+
+async function spawnFfmpeg(
+    args: string[],
+    opts: { timeoutMs?: number; captureStdout?: boolean; maxStdoutBytes?: number; loglevel?: string } = {}
+): Promise<{ stdout: Buffer; stderr: string }> {
+    try {
+        return await spawnFfmpegOnce(args, opts);
+    } catch (err: any) {
+        const fallback = swapFpsSyncArgs(args, String(err?.message || ''));
+        if (fallback) return spawnFfmpegOnce(fallback, opts);
+        throw err;
+    }
 }
 
 /**
@@ -612,7 +653,7 @@ export async function videoToAudioStickerWebp(
                     '-preset', 'default',
                     '-loop', '0',
                     '-an',
-                    '-vsync', '0',
+                    '-fps_mode', 'vfr',
                     tmpOut
                 ]);
             } else {
@@ -647,7 +688,7 @@ export async function videoToAudioStickerWebp(
                     '-preset', 'default',
                     '-loop', '0',
                     '-an',
-                    '-vsync', '0',
+                    '-fps_mode', 'vfr',
                     tmpOut
                 ]);
             }
@@ -764,7 +805,7 @@ function buildQuotedContextInfo(sock: any, jid: string, quoted?: any, ephemeralE
         const botJid = sock?.user?.id ? jidNormalizedUser(sock.user.id) : undefined;
         const rawParticipant = quoted.key.fromMe
             ? botJid
-            : quoted.participant || quoted.sender || quoted.key.participant || quoted.key.remoteJid;
+            : quoted.participant || quoted.key.participant || quoted.sender || quoted.key.remoteJid;
 
         let quotedMsg = normalizeMessageContent(quoted.message) || extractMessageContent(quoted.message) || quoted.message;
         const msgType = getContentType(quotedMsg);
