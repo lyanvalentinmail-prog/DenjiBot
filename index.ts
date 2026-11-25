@@ -27,6 +27,7 @@ import { handleGroupAlerts } from '#alertas';
 import { getSessionDir, TMP_DIR, SUBS_DIR } from './lib/settings.ts';
 import { migrateLegacySession } from './lib/sessions.ts';
 import { initBridge, underPanel, EXIT_NEED_LINK } from './lib/bridge.ts';
+import { startTikTokS2Watcher } from './lib/tiktoks2.ts';
 
 declare global {
     var botName: string;
@@ -391,6 +392,21 @@ export async function startBot(): Promise<void> {
             if (!subBotsLoopStarted) {
                 subBotsLoopStarted = true;
                 loadSubBots().catch(() => {});
+            }
+
+            startTikTokS2Watcher(() => (globalThis as any).mainConn || (globalThis as any).sock);
+
+            // Guardar nombres de los grupos actuales en la BD para el selector del panel.
+            if (typeof sock.groupFetchAllParticipating === 'function') {
+                sock.groupFetchAllParticipating()
+                    .then((groups: Record<string, any>) => {
+                        for (const [gid, meta] of Object.entries(groups || {})) {
+                            if (gid.endsWith('@g.us') && meta?.subject) {
+                                try { db.setChat(gid, 'name', String(meta.subject)); } catch {}
+                            }
+                        }
+                    })
+                    .catch(() => {});
             }
         }
 

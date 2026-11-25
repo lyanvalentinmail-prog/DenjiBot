@@ -33,6 +33,8 @@ export type MenuTheme =
     | 'shadow'
     | 'simple';
 export type LogMode = 'detallado' | 'compacto' | 'apagado';
+export type TikTokS2Source = 'repost' | 'posts' | 'favorite' | 'all';
+export type TikTokS2Mode = 'escalado' | 'normal' | 'borrarn';
 
 /** Momentos en los que el bot reacciona al mensaje de quien usa un comando. */
 export type ReactionEvent = 'wait' | 'done' | 'error' | 'denied' | 'unknown';
@@ -43,6 +45,24 @@ export interface Reactions {
     events: Record<ReactionEvent, string>;
     /** Emoji propio de un comando: sustituye al de "listo" cuando ese comando termina. */
     commands: Record<string, string>;
+}
+
+export interface TikTokS2Settings {
+    enabled: boolean;
+    /** Usuario de TikTok sin @ (ej. "miusuario"); vacío = no monitorear cuenta. */
+    username: string;
+    /** Qué sección pública de la cuenta revisar. */
+    source: TikTokS2Source;
+    /** JID del grupo (@g.us) o chat (@s.whatsapp.net) donde se enviarán los .s2. */
+    targetJid: string;
+    /** Nombre legible del grupo o chat para mostrar en el panel. */
+    targetLabel: string;
+    /** Modo de .s2 a usar: escalado, normal o borrarn. */
+    mode: TikTokS2Mode;
+    /** Convertir enlaces de TikTok enviados al privado del bot sin usar comando. */
+    privateLinks: boolean;
+    /** Cada cuántos segundos revisar la cuenta de TikTok. */
+    pollSeconds: number;
 }
 
 export interface Settings {
@@ -57,6 +77,7 @@ export interface Settings {
     /** Banner propio de cada estilo de menú; vacío = banner principal. */
     menuBanners: Record<MenuTheme, string>;
     reactions: Reactions;
+    tiktokS2: TikTokS2Settings;
     logMode: LogMode;
     autoRestart: boolean;
     activeSession: string;
@@ -118,6 +139,32 @@ export const MAX_COMMAND_REACTIONS = 100;
 
 export const LOG_MODES: LogMode[] = ['detallado', 'compacto', 'apagado'];
 
+export const TIKTOK_S2_SOURCES: TikTokS2Source[] = ['repost', 'posts', 'favorite', 'all'];
+export const TIKTOK_S2_SOURCE_NAMES: Record<TikTokS2Source, string> = {
+    repost: 'Republicados (Reposts)',
+    posts: 'Videos subidos',
+    favorite: 'Me gusta públicos',
+    all: 'Todo (republicados, subidos y likes)'
+};
+export const TIKTOK_S2_SOURCE_HINTS: Record<TikTokS2Source, string> = {
+    repost: 'Cada vez que la cuenta republique un video en TikTok se hará .s2 automáticamente.',
+    posts: 'Cada vez que la cuenta suba un video nuevo se convertirá en .s2.',
+    favorite: 'Cada vez que la cuenta dé "Me gusta" (con likes visibles en el perfil) se hará .s2.',
+    all: 'Revisa republicados, videos subidos y "Me gusta" públicos a la vez.'
+};
+
+export const TIKTOK_S2_MODES: TikTokS2Mode[] = ['normal', 'borrarn', 'escalado'];
+export const TIKTOK_S2_MODE_NAMES: Record<TikTokS2Mode, string> = {
+    normal: 'Normal (escala del video)',
+    borrarn: 'BorrarN (sin esquinas negras)',
+    escalado: 'Escalado (512x512)'
+};
+export const TIKTOK_S2_MODE_HINTS: Record<TikTokS2Mode, string> = {
+    normal: 'Conserva la escala/proporción original del video (por defecto).',
+    borrarn: 'Borra bordes y esquinas negras del video al crear el sticker con audio.',
+    escalado: 'Escala el sticker directamente a 512x512.'
+};
+
 export const defaultSettings: Settings = {
     botName: 'Denji bot',
     devName: 'Denji Dev',
@@ -143,6 +190,16 @@ export const defaultSettings: Settings = {
         enabled: true,
         events: { wait: '🕘', done: '⭐️', error: '', denied: '', unknown: '' },
         commands: {}
+    },
+    tiktokS2: {
+        enabled: false,
+        username: '',
+        source: 'repost',
+        targetJid: '',
+        targetLabel: '',
+        mode: 'normal',
+        privateLinks: true,
+        pollSeconds: 45
     },
     logMode: 'detallado',
     autoRestart: true,
@@ -213,6 +270,48 @@ function normalizeMenuBanners(raw: any): Record<MenuTheme, string> {
     return out;
 }
 
+/** Extrae el nombre de usuario de TikTok desde "@usuario", "usuario" o una URL de perfil. */
+export function cleanTikTokUsername(value: unknown): string {
+    if (typeof value !== 'string') return '';
+    const trimmed = value.trim();
+    if (!trimmed) return '';
+    const urlMatch = trimmed.match(/tiktok\.com\/@([a-zA-Z0-9._-]{2,32})/i);
+    const candidate = urlMatch ? urlMatch[1] : trimmed.replace(/^@+/, '').split(/[/?#\s]/)[0];
+    return /^[a-zA-Z0-9._-]{2,32}$/.test(candidate) ? candidate : '';
+}
+
+/** Normaliza un JID de grupo (@g.us), usuario (@s.whatsapp.net) o número telefónico. */
+export function cleanTargetJid(value: unknown): string {
+    if (typeof value !== 'string') return '';
+    const trimmed = value.trim();
+    if (!trimmed) return '';
+    if (/^[0-9-]{8,36}@g\.us$/i.test(trimmed)) return trimmed.toLowerCase();
+    if (/^[0-9]{7,20}@s\.whatsapp\.net$/i.test(trimmed)) {
+        return `${cleanNumber(trimmed.split('@')[0])}@s.whatsapp.net`;
+    }
+    const digits = cleanNumber(trimmed);
+    if (digits.length >= 7 && digits.length <= 20) return `${digits}@s.whatsapp.net`;
+    return '';
+}
+
+function normalizeTikTokS2(raw: any): TikTokS2Settings {
+    const src = raw && typeof raw === 'object' ? raw : {};
+    const d = defaultSettings.tiktokS2;
+    const pollNum = Number(src.pollSeconds);
+    const pollSeconds = Number.isFinite(pollNum) ? Math.min(600, Math.max(20, Math.round(pollNum))) : d.pollSeconds;
+    const targetJid = src.targetJid === '' ? '' : cleanTargetJid(src.targetJid);
+    return {
+        enabled: typeof src.enabled === 'boolean' ? src.enabled : d.enabled,
+        username: src.username === '' ? '' : cleanTikTokUsername(src.username),
+        source: TIKTOK_S2_SOURCES.includes(src.source) ? src.source : d.source,
+        targetJid,
+        targetLabel: targetJid ? cleanText(src.targetLabel, '', 80) : '',
+        mode: TIKTOK_S2_MODES.includes(src.mode) ? src.mode : d.mode,
+        privateLinks: typeof src.privateLinks === 'boolean' ? src.privateLinks : d.privateLinks,
+        pollSeconds
+    };
+}
+
 /** Devuelve siempre un objeto de ajustes completo y válido. */
 export function normalizeSettings(raw: any): Settings {
     const src = raw && typeof raw === 'object' ? raw : {};
@@ -237,6 +336,7 @@ export function normalizeSettings(raw: any): Settings {
         menuTheme: MENU_THEMES.includes(src.menuTheme) ? src.menuTheme : d.menuTheme,
         menuBanners: normalizeMenuBanners(src.menuBanners),
         reactions: normalizeReactions(src.reactions),
+        tiktokS2: normalizeTikTokS2(src.tiktokS2),
         logMode: LOG_MODES.includes(src.logMode) ? src.logMode : d.logMode,
         autoRestart: typeof src.autoRestart === 'boolean' ? src.autoRestart : d.autoRestart,
         activeSession: typeof src.activeSession === 'string' && isValidSessionName(src.activeSession)

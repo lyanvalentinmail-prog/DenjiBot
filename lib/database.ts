@@ -109,6 +109,7 @@ export const defUser: Record<string, any> = {
 };
 
 export const defChat: Record<string, any> = {
+    name: '',
     isBanned: 0,
     welcome: 0,
     goodbye: 0,
@@ -963,6 +964,22 @@ export function clearDB(): void {
     timer.unref();
 }
 
+export function getMeta<T = any>(key: string, fallback: T): T {
+    try {
+        const row = stmt('SELECT value FROM db_meta WHERE key = ?').get(key) as any;
+        if (!row || row.value == null) return fallback;
+        return parseJSON(row.value, fallback);
+    } catch {
+        return fallback;
+    }
+}
+
+export function setMeta(key: string, value: any): void {
+    try {
+        stmt('INSERT OR REPLACE INTO db_meta (key, value) VALUES (?, ?)').run(key, toStore(value));
+    } catch {}
+}
+
 const dbApi = {
     initDB,
     loadDB,
@@ -983,6 +1000,8 @@ const dbApi = {
     setCharacter,
     getStickersPack,
     setStickersPack,
+    getMeta,
+    setMeta,
     deletedb,
     setCreate,
     wipeAllData,

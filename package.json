@@ -24,6 +24,7 @@
     "#serialize": "./lib/simple.ts",
     "#sticker": "./lib/stickers.ts",
     "#audiosticker": "./lib/audiosticker.ts",
+    "#tiktoks2": "./lib/tiktoks2.ts",
     "#stickerly": "./lib/stickerly.ts",
     "#core/exif": "./lib/stickers.ts",
     "#core/latency": "./lib/latency.ts",

@@ -116,16 +116,20 @@ async function runPanel(): Promise<void> {
         DEFAULT_BANNER, LOG_MODES, MENU_STYLES, MENU_STYLE_NAMES, MENU_STYLE_HINTS,
         MENU_THEMES, MENU_THEME_NAMES, REACTION_EVENTS, REACTION_EVENT_NAMES,
         REACTION_EVENT_HINTS, MAX_COMMAND_REACTIONS,
-        cleanEmoji, cleanCommandName
+        TIKTOK_S2_SOURCES, TIKTOK_S2_SOURCE_NAMES, TIKTOK_S2_SOURCE_HINTS,
+        TIKTOK_S2_MODES, TIKTOK_S2_MODE_NAMES, TIKTOK_S2_MODE_HINTS,
+        cleanEmoji, cleanCommandName, cleanTikTokUsername, cleanTargetJid
     } = await import('./lib/settings.ts');
     const { sampleMenu } = await import('./lib/menustyles.ts');
 
     type MenuStyle = (typeof MENU_STYLES)[number];
     type MenuTheme = (typeof MENU_THEMES)[number];
     type ReactionEvent = (typeof REACTION_EVENTS)[number];
+    type TikTokS2Source = (typeof TIKTOK_S2_SOURCES)[number];
+    type TikTokS2Mode = (typeof TIKTOK_S2_MODES)[number];
     const { listSessions, readSession, deleteSession, migrateLegacySession } = await import('./lib/sessions.ts');
     const { inspectBotData, wipeBotData, WIPE_PRESETS } = await import('./lib/wipe.ts');
-    const { collectStats } = await import('./lib/stats.ts');
+    const { collectStats, listKnownChats } = await import('./lib/stats.ts');
 
     type Stats = Awaited<ReturnType<typeof collectStats>>;
     type StartOptions = NonNullable<Parameters<typeof startBot>[0]>;
@@ -1508,17 +1512,260 @@ async function runPanel(): Promise<void> {
         }
     }
 
+    async function pickTikTokTargetScreen(): Promise<void> {
+        const known = await listKnownChats();
+        const s = loadSettings();
+        const cur = s.tiktokS2.targetJid;
+
+        type PickVal =
+            | { kind: 'chat'; jid: string; label: string }
+            | { kind: 'phone' }
+            | { kind: 'groupjid' }
+            | { kind: 'clear' }
+            | null;
+
+        const options: { label: string; hint?: string; value: PickVal; key?: string }[] = [];
+
+        for (const item of known) {
+            const kindTag = item.isGroup ? 'Grupo' : 'Chat';
+            const displayName = item.name || (item.isGroup ? item.jid : phone(item.jid.split('@')[0]));
+            const hintJid = item.isGroup ? item.jid : phone(item.jid.split('@')[0]);
+            options.push({
+                label: `${item.jid === cur ? '★ ' : ''}[${kindTag}] ${displayName}`,
+                hint: item.name ? hintJid : kindTag,
+                value: { kind: 'chat', jid: item.jid, label: displayName }
+            });
+        }
+
+        options.push({
+            label: '+ Escribir número de WhatsApp',
+            hint: 'Ej: 59899123456',
+            value: { kind: 'phone' },
+            key: 'n'
+        });
+        options.push({
+            label: '+ Escribir JID de grupo (@g.us)',
+            hint: 'Ej: 120363012345678901@g.us',
+            value: { kind: 'groupjid' },
+            key: 'g'
+        });
+        if (cur) {
+            options.push({
+                label: 'Quitar grupo/chat destino',
+                hint: 'Dejar vacío',
+                value: { kind: 'clear' },
+                key: 'x'
+            });
+        }
+        options.push({ label: 'Volver', value: null, key: '0' });
+
+        const picked = await select<PickVal>({
+            header: () => [
+                ...title('TikTok a .s2 › Grupo o chat destino'),
+                ...para(
+                    known.length
+                        ? 'Elige un grupo o chat detectado por el bot, o escribe uno manualmente. También puedes escribir .tiktoks2 aqui dentro del grupo de WhatsApp.'
+                        : 'Aún no hay grupos guardados en la base de datos. Conecta el bot o escribe un número/JID manualmente (o usa .tiktoks2 aqui en WhatsApp).',
+                    c.dim
+                )
+            ],
+            options,
+            back: null
+        });
+
+        if (!picked) return;
+
+        if (picked.kind === 'chat') {
+            const next = loadSettings().tiktokS2;
+            saveSettings({
+                tiktokS2: { ...next, targetJid: picked.jid, targetLabel: picked.label, enabled: true }
+            });
+            return;
+        }
+
+        if (picked.kind === 'clear') {
+            const next = loadSettings().tiktokS2;
+            saveSettings({
+                tiktokS2: { ...next, targetJid: '', targetLabel: '', enabled: false }
+            });
+            return;
+        }
+
+        if (picked.kind === 'phone') {
+            const raw = await prompt({
+                header: () => [
+                    ...title('TikTok a .s2 › Número destino'),
+                    ...para('Escribe el número con código de país, sin + ni espacios (ejemplo: 59899123456).', c.dim)
+                ],
+                label: 'Número de WhatsApp',
+                maxLength: 24,
+                validate: v => {
+                    const digits = cleanNumber(v);
+                    return digits.length >= 7 && digits.length <= 20
+                        ? null
+                        : 'Introduce entre 7 y 20 dígitos con código de país.';
+                }
+            });
+            if (raw !== null) {
+                const digits = cleanNumber(raw);
+                const jid = `${digits}@s.whatsapp.net`;
+                const next = loadSettings().tiktokS2;
+                saveSettings({
+                    tiktokS2: { ...next, targetJid: jid, targetLabel: phone(digits), enabled: true }
+                });
+            }
+            return;
+        }
+
+        if (picked.kind === 'groupjid') {
+            const raw = await prompt({
+                header: () => [
+                    ...title('TikTok a .s2 › JID de grupo'),
+                    ...para('Pega el JID del grupo terminado en @g.us (puedes usar .tiktoks2 aqui en el grupo para configurarlo sin copiar el JID).', c.dim)
+                ],
+                label: 'JID del grupo',
+                maxLength: 48,
+                validate: v => (cleanTargetJid(v).endsWith('@g.us') ? null : 'Debe tener formato 120363...@g.us')
+            });
+            if (raw !== null) {
+                const jid = cleanTargetJid(raw);
+                const next = loadSettings().tiktokS2;
+                saveSettings({
+                    tiktokS2: { ...next, targetJid: jid, targetLabel: jid, enabled: true }
+                });
+            }
+        }
+    }
+
+    async function tiktokS2Screen(): Promise<void> {
+        type TItem = 'toggle' | 'target' | 'user' | 'source' | 'mode' | 'dm' | 'poll' | 'back';
+        let index = 0;
+
+        while (true) {
+            const s = loadSettings();
+            const t = s.tiktokS2;
+            const targetDesc = t.targetJid
+                ? (t.targetLabel ? `${t.targetLabel} (${t.targetJid})` : t.targetJid)
+                : 'sin elegir';
+
+            const choice = await select<TItem>({
+                header: () => [
+                    ...title('Personalizar › TikTok a .s2'),
+                    ...para('Convierte videos de TikTok en stickers con audio (.s2) automáticamente y los envía al grupo o chat que elijas.', c.dim)
+                ],
+                options: [
+                    { label: 'Automatización', hint: t.enabled ? 'activada' : 'desactivada', value: 'toggle', key: '1' },
+                    { label: 'Grupo o chat destino', hint: targetDesc, value: 'target', key: '2' },
+                    { label: 'Cuenta de TikTok', hint: t.username ? `@${t.username}` : 'ninguna', value: 'user', key: '3' },
+                    { label: 'Detectar en cuenta', hint: TIKTOK_S2_SOURCE_NAMES[t.source], value: 'source', key: '4' },
+                    { label: 'Modo de .s2', hint: TIKTOK_S2_MODE_NAMES[t.mode], value: 'mode', key: '5' },
+                    { label: 'Links enviados al privado', hint: t.privateLinks ? 'activado' : 'desactivado', value: 'dm', key: '6' },
+                    { label: 'Intervalo de revisión', hint: `cada ${t.pollSeconds}s`, value: 'poll', key: '7' },
+                    { label: 'Volver', hint: '', value: 'back', key: '0' }
+                ],
+                initial: index,
+                back: 'back'
+            });
+
+            const order: TItem[] = ['toggle', 'target', 'user', 'source', 'mode', 'dm', 'poll', 'back'];
+            index = Math.max(0, order.indexOf(choice));
+            if (choice === 'back') return;
+
+            if (choice === 'toggle') {
+                if (!t.enabled && !t.targetJid) {
+                    await message(() => [
+                        ...title('TikTok a .s2'),
+                        ...para('Primero elige el grupo o chat destino donde el bot enviará los stickers .s2.', c.yellow)
+                    ]);
+                    await pickTikTokTargetScreen();
+                } else {
+                    saveSettings({ tiktokS2: { ...t, enabled: !t.enabled } });
+                }
+            } else if (choice === 'target') {
+                await pickTikTokTargetScreen();
+            } else if (choice === 'user') {
+                const raw = await prompt({
+                    header: () => [
+                        ...title('TikTok a .s2 › Cuenta de TikTok'),
+                        ...para('Escribe el @usuario (o enlace de perfil) de TikTok a monitorear. Déjalo vacío para no monitorear cuenta y usar solo links por privado.', c.dim)
+                    ],
+                    label: 'Usuario de TikTok (@usuario)',
+                    initial: t.username ? `@${t.username}` : '',
+                    maxLength: 120,
+                    validate: v => {
+                        if (!v.trim()) return null;
+                        return cleanTikTokUsername(v) ? null : 'Usuario de TikTok inválido.';
+                    }
+                });
+                if (raw !== null) {
+                    const username = cleanTikTokUsername(raw);
+                    saveSettings({ tiktokS2: { ...t, username } });
+                }
+            } else if (choice === 'source') {
+                const src = await select<TikTokS2Source | null>({
+                    header: () => [
+                        ...title('TikTok a .s2 › Qué detectar en la cuenta'),
+                        ...para('Nota: para detectar republicados o "Me gusta", esa sección debe ser pública en el perfil de TikTok.', c.dim)
+                    ],
+                    options: [
+                        ...TIKTOK_S2_SOURCES.map((item, i) => ({
+                            label: TIKTOK_S2_SOURCE_NAMES[item],
+                            value: item as TikTokS2Source | null,
+                            key: String(i + 1)
+                        })),
+                        { label: 'Volver', value: null, key: '0' }
+                    ],
+                    initial: Math.max(0, TIKTOK_S2_SOURCES.indexOf(t.source)),
+                    preview: val => (val ? para(TIKTOK_S2_SOURCE_HINTS[val], c.dim) : []),
+                    back: null
+                });
+                if (src) saveSettings({ tiktokS2: { ...t, source: src } });
+            } else if (choice === 'mode') {
+                const m = await select<TikTokS2Mode | null>({
+                    header: () => [
+                        ...title('TikTok a .s2 › Modo de sticker con audio'),
+                        ...para('Elige con qué modo de .s2 se crearán los stickers automáticos:')
+                    ],
+                    options: [
+                        ...TIKTOK_S2_MODES.map((item, i) => ({
+                            label: TIKTOK_S2_MODE_NAMES[item],
+                            value: item as TikTokS2Mode | null,
+                            key: String(i + 1)
+                        })),
+                        { label: 'Volver', value: null, key: '0' }
+                    ],
+                    initial: Math.max(0, TIKTOK_S2_MODES.indexOf(t.mode)),
+                    preview: val => (val ? para(TIKTOK_S2_MODE_HINTS[val], c.dim) : []),
+                    back: null
+                });
+                if (m) saveSettings({ tiktokS2: { ...t, mode: m } });
+            } else if (choice === 'dm') {
+                saveSettings({ tiktokS2: { ...t, privateLinks: !t.privateLinks } });
+            } else if (choice === 'poll') {
+                const steps = [30, 45, 60, 120, 300];
+                const curIdx = steps.indexOf(t.pollSeconds);
+                const nextPoll = steps[(curIdx + 1) % steps.length];
+                saveSettings({ tiktokS2: { ...t, pollSeconds: nextPoll } });
+            }
+        }
+    }
+
     async function customizeScreen(): Promise<void> {
-        type Item = 'style' | 'menu' | 'reactions' | 'name' | 'prefix' | 'coin' | 'dev' | 'owners' | 'banner' | 'logs' | 'restart' | 'reset' | 'back';
+        type Item = 'style' | 'menu' | 'reactions' | 'tiktoks2' | 'name' | 'prefix' | 'coin' | 'dev' | 'owners' | 'banner' | 'logs' | 'restart' | 'reset' | 'back';
         let index = 0;
 
         while (true) {
             const s = loadSettings();
             const r = s.reactions;
+            const tt = s.tiktokS2;
+            const ttHint = tt.enabled && tt.targetJid
+                ? `${tt.username ? `@${tt.username} → ` : ''}${tt.targetLabel || tt.targetJid}`
+                : 'desactivado';
             const items: { label: string; hint: string; value: Item; key: string }[] = [
                 { label: 'Estilo del menú', hint: MENU_THEME_NAMES[s.menuTheme], value: 'style', key: '1' },
                 { label: 'Formato del menú', hint: MENU_STYLE_NAMES[s.menuStyle], value: 'menu', key: '2' },
                 { label: 'Reacciones', hint: r.enabled ? `${r.events.wait || '—'} espera ${r.events.done || '—'} listo` : 'desactivadas', value: 'reactions', key: '3' },
+                { label: 'TikTok a .s2', hint: ttHint, value: 'tiktoks2', key: 't' },
                 { label: 'Nombre del bot', hint: s.botName, value: 'name', key: '4' },
                 { label: 'Prefijo', hint: s.prefix, value: 'prefix', key: '5' },
                 { label: 'Moneda', hint: s.coin, value: 'coin', key: '6' },
@@ -1548,6 +1795,8 @@ async function runPanel(): Promise<void> {
                 await menuStyleScreen();
             } else if (choice === 'reactions') {
                 await reactionsScreen();
+            } else if (choice === 'tiktoks2') {
+                await tiktokS2Screen();
             } else if (choice === 'menu') {
                 const style = await select<MenuStyle | null>({
                     header: () => [

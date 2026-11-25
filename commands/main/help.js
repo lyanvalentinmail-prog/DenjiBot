@@ -142,6 +142,7 @@ const USAGE_HINTS = {
   // stickers
   sticker: '[img|video]',
   s2: '[Escalado|Normal|BorrarN]',
+  tiktoks2: '[aqui|grupos|user|modo]',
   wm: '[pack | autor]',
   smeme: '<arriba | abajo>',
   ttp: '<texto>',

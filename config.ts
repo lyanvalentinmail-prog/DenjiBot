@@ -1,5 +1,5 @@
 import { loadSettings, watchSettings, resolveBanner, resolveMenuBanner, defaultSettings } from './lib/settings.ts';
-import type { Settings, MenuStyle, MenuTheme, LogMode, Reactions } from './lib/settings.ts';
+import type { Settings, MenuStyle, MenuTheme, LogMode, Reactions, TikTokS2Settings } from './lib/settings.ts';
 
 /**
  * Configuración de Denji bot + variables globales de compatibilidad con los
@@ -21,6 +21,7 @@ export const config = {
     /** Banner del menú según el estilo activo. */
     menuBanner: '',
     reactions: structuredClone(defaultSettings.reactions) as Reactions,
+    tiktokS2: structuredClone(defaultSettings.tiktokS2) as TikTokS2Settings,
     logMode: 'detallado' as LogMode
 };
 
@@ -71,6 +72,7 @@ function applySettings(s: Settings): void {
     config.menuTheme = s.menuTheme;
     config.menuBanner = resolveMenuBanner(s);
     config.reactions = s.reactions;
+    config.tiktokS2 = s.tiktokS2;
     config.logMode = s.logMode;
     config.banner = resolveBanner(s.banner);
     config.icon = config.banner;
