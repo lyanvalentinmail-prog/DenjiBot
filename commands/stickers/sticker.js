@@ -189,7 +189,7 @@ export default {
                 '-vf', vf, '-c:v', 'libwebp',
                 '-lossless', '0', '-q:v', p.q,
                 '-compression_level', '4', '-preset', 'default',
-                '-loop', '0', '-an', '-vsync', '0', outFile
+                '-loop', '0', '-an', '-fps_mode', 'vfr', outFile
               ]);
               outBuf = fs.readFileSync(outFile);
               if (outBuf.length <= 950_000) break;

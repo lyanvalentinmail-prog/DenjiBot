@@ -62,7 +62,35 @@ export function isGifBuffer(buf: Buffer): boolean {
     );
 }
 
-export function runFfmpeg(args: string[], timeoutMs = 45_000): Promise<void> {
+function swapFpsSyncArgs(args: string[], errText: string): string[] | null {
+    if (/Unrecognized option 'fps_mode'/i.test(errText) && args.includes('-fps_mode')) {
+        const next: string[] = [];
+        for (let i = 0; i < args.length; i++) {
+            if (args[i] === '-fps_mode' && i + 1 < args.length) {
+                const v = args[++i];
+                next.push('-vsync', v === 'passthrough' ? '0' : v);
+            } else {
+                next.push(args[i]);
+            }
+        }
+        return next;
+    }
+    if (/Unrecognized option 'vsync'/i.test(errText) && args.includes('-vsync')) {
+        const next: string[] = [];
+        for (let i = 0; i < args.length; i++) {
+            if (args[i] === '-vsync' && i + 1 < args.length) {
+                const v = args[++i];
+                next.push('-fps_mode', v === '0' ? 'passthrough' : v);
+            } else {
+                next.push(args[i]);
+            }
+        }
+        return next;
+    }
+    return null;
+}
+
+function runFfmpegOnce(args: string[], timeoutMs = 45_000): Promise<void> {
     return new Promise((resolve, reject) => {
         let settled = false;
         const proc = spawn('ffmpeg', ['-hide_banner', '-loglevel', 'error', ...args], {
@@ -99,6 +127,19 @@ export function runFfmpeg(args: string[], timeoutMs = 45_000): Promise<void> {
             else reject(new Error(stderr.trim() || `ffmpeg finalizó con código ${code}`));
         });
     });
+}
+
+export async function runFfmpeg(args: string[], timeoutMs = 45_000): Promise<void> {
+    try {
+        await runFfmpegOnce(args, timeoutMs);
+    } catch (err: any) {
+        const fallback = swapFpsSyncArgs(args, String(err?.message || ''));
+        if (fallback) {
+            await runFfmpegOnce(fallback, timeoutMs);
+            return;
+        }
+        throw err;
+    }
 }
 
 function safeUnlink(file: string): void {
@@ -160,7 +201,7 @@ export async function videoToWebp(media: Buffer, extraVf = ''): Promise<Buffer> 
                 '-preset', 'default',
                 '-loop', '0',
                 '-an',
-                '-vsync', '0',
+                '-fps_mode', 'vfr',
                 tmpOut
             ]);
             result = fs.readFileSync(tmpOut);
